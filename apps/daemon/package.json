@@ -17,6 +17,10 @@
     "./sidecar": {
       "types": "./dist/sidecar/index.d.ts",
       "default": "./dist/sidecar/index.js"
+    },
+    "./foldy-receipt-signer": {
+      "types": "./dist/foldy-receipt-signer.d.ts",
+      "default": "./dist/foldy-receipt-signer.js"
     }
   },
   "files": [

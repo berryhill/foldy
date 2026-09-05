@@ -35,32 +35,71 @@ export type Route =
   | { kind: 'marketplace' }
   | { kind: 'marketplace-detail'; pluginId: string };
 
+function decodeRoutePart(value: string): string | null {
+  try {
+    const decoded = decodeURIComponent(value);
+    return decoded.includes('\0') ? null : decoded;
+  } catch {
+    return null;
+  }
+}
+
+function decodeFilePath(parts: string[]): string | null {
+  const decoded: string[] = [];
+  for (const part of parts) {
+    const segment = decodeRoutePart(part);
+    // Keep path ownership unambiguous: separators come from URL path
+    // boundaries, never from an encoded segment, and dot segments may not
+    // escape the project root when this value reaches the file viewer.
+    if (
+      segment == null
+      || segment === '.'
+      || segment === '..'
+      || segment.includes('/')
+      || segment.includes('\\')
+    ) {
+      return null;
+    }
+    decoded.push(segment);
+  }
+  return decoded.join('/');
+}
+
 export function parseRoute(pathname: string): Route {
-  const parts = pathname.replace(/\/+$/, '').split('/').filter(Boolean);
+  // `useRoute` passes location.pathname, but accepting a copied path with a
+  // query/hash here makes the parser safe for other direct-load callers too.
+  const pathOnly = pathname.split(/[?#]/, 1)[0] ?? '';
+  const parts = pathOnly.replace(/\/+$/, '').split('/').filter(Boolean);
   if (parts.length === 0) return { kind: 'home', view: 'home' };
   if (parts[0] === 'projects') {
     if (parts[1]) {
-      const projectId = decodeURIComponent(parts[1]);
+      const projectId = decodeRoutePart(parts[1]);
+      if (projectId == null) return { kind: 'home', view: 'home' };
       // /projects/:id/conversations/:cid[/files/...]
       if (parts[2] === 'conversations' && parts[3]) {
-        const conversationId = decodeURIComponent(parts[3]);
+        const conversationId = decodeRoutePart(parts[3]);
+        if (conversationId == null) return { kind: 'home', view: 'home' };
         if (parts[4] === 'files' && parts[5]) {
+          const fileName = decodeFilePath(parts.slice(5));
+          if (fileName == null) return { kind: 'home', view: 'home' };
           return {
             kind: 'project',
             projectId,
             conversationId,
-            fileName: decodeURIComponent(parts.slice(5).join('/')),
+            fileName,
           };
         }
         return { kind: 'project', projectId, conversationId, fileName: null };
       }
       // /projects/:id/files/...
       if (parts[2] === 'files' && parts[3]) {
+        const fileName = decodeFilePath(parts.slice(3));
+        if (fileName == null) return { kind: 'home', view: 'home' };
         return {
           kind: 'project',
           projectId,
           conversationId: null,
-          fileName: decodeURIComponent(parts.slice(3).join('/')),
+          fileName,
         };
       }
       return { kind: 'project', projectId, conversationId: null, fileName: null };
@@ -121,8 +160,10 @@ export function buildPath(route: Route): string {
 // `window.location` directly so we can fan the change out to any
 // `useRoute()` subscriber via a custom event.
 export function navigate(route: Route, opts: { replace?: boolean } = {}): void {
-  const target = buildPath(route);
-  const current = window.location.pathname;
+  const targetPath = buildPath(route);
+  const suffix = `${window.location.search}${window.location.hash}`;
+  const target = `${targetPath}${suffix}`;
+  const current = `${window.location.pathname}${suffix}`;
   if (target === current) return;
   if (opts.replace) {
     window.history.replaceState(null, '', target);

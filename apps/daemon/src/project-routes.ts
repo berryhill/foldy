@@ -1,4 +1,5 @@
 import type { Express } from 'express';
+import { isDeepStrictEqual } from 'node:util';
 import {
   defaultScenarioPluginIdForKind,
   type PluginManifest,
@@ -6,6 +7,16 @@ import {
 import { createProjectArtifactFile } from './artifact-create.js';
 import { ArtifactRegressionError } from './artifact-stub-guard.js';
 import { listDesignSystems } from './design-systems.js';
+import {
+  assertGenericFoldyMetadataPatchAllowed,
+  assertGenericFoldyProjectCreationAllowed,
+  enrollLegacyFoldyBaseline,
+  FoldyPromotionError,
+  promoteFoldy,
+  repairFoldyNoProtectedAncestor,
+  withFoldyProjectLock,
+  withGenericFoldyFileMutation,
+} from './foldy-promotion.js';
 import {
   FIRST_PARTY_ATOMS,
   getInstalledPlugin,
@@ -133,6 +144,7 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
       if (typeof name !== 'string' || !name.trim()) {
         return sendApiError(res, 400, 'BAD_REQUEST', 'name required');
       }
+      assertGenericFoldyProjectCreationAllowed(metadata);
       // baseDir is privileged: it lets a project root directly inside the
       // user's filesystem. The /api/import/folder endpoint is the only
       // path that's allowed to set it, because that's where realpath() +
@@ -292,6 +304,9 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
       };
       res.json(body);
     } catch (err: any) {
+      if (err instanceof FoldyPromotionError) {
+        return sendApiError(res, err.status, err.code, err.message, { details: err.details });
+      }
       sendApiError(res, 400, 'BAD_REQUEST', String(err));
     }
   });
@@ -306,85 +321,183 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
     res.json(body);
   });
 
-  app.patch('/api/projects/:id', (req, res) => {
+  app.patch('/api/projects/:id', async (req, res) => {
     try {
-      const patch = req.body || {};
-      // baseDir / folder-import state is privileged: it's set only by the
-      // import endpoint and otherwise immutable. Two failure modes to
-      // guard against here:
-      //   1. Explicit attempt to change baseDir → reject with 400.
-      //   2. A regular metadata patch that *omits* baseDir (e.g. a UI
-      //      that only edits linkedDirs sends `{ metadata: { kind, linkedDirs } }`).
-      //      updateProject() replaces metadata wholesale, so without
-      //      preservation the existing baseDir gets wiped and the project
-      //      detaches from the user's folder — subsequent reads/writes
-      //      silently fall back to .od/projects/<id>.
-      // For case 2 we re-stamp the immutable fields from the existing
-      // project record onto the incoming patch so the user can keep
-      // patching other metadata without ever losing their import root.
-      if (patch.metadata && typeof patch.metadata === 'object') {
+      const project = await withFoldyProjectLock(req.params.id, async () => {
+        const patch = { ...(req.body || {}) };
         const existing = getProject(db, req.params.id);
-        const existingMeta = existing?.metadata;
-        if ('fromTrustedPicker' in patch.metadata
-            && patch.metadata.fromTrustedPicker !== existingMeta?.fromTrustedPicker) {
-          return sendApiError(
-            res, 400, 'BAD_REQUEST',
-            'fromTrustedPicker can only be set via POST /api/import/folder',
+        if (!existing) return null;
+        const existingMeta = existing.metadata;
+        const hasMetadataPatch = Object.prototype.hasOwnProperty.call(patch, 'metadata');
+
+        if (hasMetadataPatch) {
+          await assertGenericFoldyMetadataPatchAllowed(
+            resolveProjectDir(PROJECTS_DIR, existing.id, existingMeta),
+            existingMeta,
+            patch.metadata,
           );
         }
-        if (existingMeta?.baseDir) {
-          if ('baseDir' in patch.metadata && patch.metadata.baseDir !== existingMeta.baseDir) {
-            return sendApiError(
-              res, 400, 'BAD_REQUEST',
-              'baseDir is immutable after import; use a new import to change it',
+
+        if (patch.metadata && typeof patch.metadata === 'object' && !Array.isArray(patch.metadata)) {
+          if ('fromTrustedPicker' in patch.metadata
+              && patch.metadata.fromTrustedPicker !== existingMeta?.fromTrustedPicker) {
+            throw new FoldyPromotionError(
+              400,
+              'BAD_REQUEST',
+              'fromTrustedPicker can only be set via POST /api/import/folder',
             );
           }
-          patch.metadata = {
-            ...patch.metadata,
-            baseDir: existingMeta.baseDir,
-            ...(existingMeta.importedFrom === 'folder'
-              ? { importedFrom: 'folder' }
-              : {}),
-            ...(existingMeta.fromTrustedPicker === true
-              ? { fromTrustedPicker: true as const }
-              : {}),
-          };
-        } else if ('baseDir' in patch.metadata) {
-          // Non-imported project trying to acquire a baseDir → reject (only
-          // /api/import/folder can set it).
-          return sendApiError(
-            res, 400, 'BAD_REQUEST',
-            'baseDir can only be set via POST /api/import/folder',
-          );
+          if (existingMeta?.baseDir) {
+            if ('baseDir' in patch.metadata && patch.metadata.baseDir !== existingMeta.baseDir) {
+              throw new FoldyPromotionError(
+                400,
+                'BAD_REQUEST',
+                'baseDir is immutable after import; use a new import to change it',
+              );
+            }
+            patch.metadata = {
+              ...patch.metadata,
+              baseDir: existingMeta.baseDir,
+              ...(existingMeta.importedFrom === 'folder' ? { importedFrom: 'folder' } : {}),
+              ...(existingMeta.fromTrustedPicker === true ? { fromTrustedPicker: true as const } : {}),
+            };
+          } else if ('baseDir' in patch.metadata) {
+            throw new FoldyPromotionError(
+              400,
+              'BAD_REQUEST',
+              'baseDir can only be set via POST /api/import/folder',
+            );
+          }
+
+          if (patch.metadata.linkedDirs) {
+            const validated = validateLinkedDirs(patch.metadata.linkedDirs);
+            if (validated.error) {
+              throw new FoldyPromotionError(400, 'INVALID_LINKED_DIR', validated.error);
+            }
+            patch.metadata.linkedDirs = existingMeta?.fromTrustedPicker === true
+              ? patch.metadata.linkedDirs
+              : validated.dirs;
+          }
         }
-      }
-      if (patch.metadata?.linkedDirs) {
-        const existing = getProject(db, req.params.id);
-        const validated = validateLinkedDirs(patch.metadata.linkedDirs);
-        if (validated.error) {
-          return sendApiError(res, 400, 'INVALID_LINKED_DIR', validated.error);
+
+        if (patch.customInstructions !== undefined
+            && typeof patch.customInstructions !== 'string'
+            && patch.customInstructions !== null) {
+          throw new FoldyPromotionError(400, 'BAD_REQUEST', 'customInstructions must be a string or null');
         }
-        patch.metadata.linkedDirs =
-          existing?.metadata?.fromTrustedPicker === true
-            ? patch.metadata.linkedDirs
-            : validated.dirs;
-      }
-      if (patch.customInstructions !== undefined
-          && typeof patch.customInstructions !== 'string'
-          && patch.customInstructions !== null) {
-        return sendApiError(res, 400, 'BAD_REQUEST', 'customInstructions must be a string or null');
-      }
-      if (typeof patch.customInstructions === 'string' && patch.customInstructions.length > 5000) {
-        return sendApiError(res, 400, 'BAD_REQUEST', 'customInstructions exceeds 5 000 character limit');
-      }
-      const project = updateProject(db, req.params.id, patch);
-      if (!project)
-        return sendApiError(res, 404, 'PROJECT_NOT_FOUND', 'not found');
+        if (typeof patch.customInstructions === 'string' && patch.customInstructions.length > 5000) {
+          throw new FoldyPromotionError(400, 'BAD_REQUEST', 'customInstructions exceeds 5 000 character limit');
+        }
+
+        if (hasMetadataPatch) {
+          const expectedJson = existingMeta ? JSON.stringify(existingMeta) : null;
+          const replacementJson = patch.metadata ? JSON.stringify(patch.metadata) : null;
+          const cas = db.prepare(
+            `UPDATE projects
+                SET metadata_json = ?, updated_at = ?
+              WHERE id = ? AND metadata_json IS ?`,
+          ).run(replacementJson, Date.now(), existing.id, expectedJson);
+          if (cas.changes !== 1) {
+            throw new FoldyPromotionError(409, 'FOLDY_METADATA_CAS_FAILED', 'project metadata changed during generic PATCH');
+          }
+          delete patch.metadata;
+        }
+        return updateProject(db, req.params.id, patch);
+      });
+      if (!project) return sendApiError(res, 404, 'PROJECT_NOT_FOUND', 'not found');
       /** @type {import('@open-design/contracts').ProjectResponse} */
       const body = { project };
       res.json(body);
     } catch (err: any) {
+      if (err instanceof FoldyPromotionError) {
+        return sendApiError(res, err.status, err.code, err.message, { details: err.details });
+      }
       sendApiError(res, 400, 'BAD_REQUEST', String(err));
+    }
+  });
+
+  app.post('/api/projects/:id/foldy/enroll-legacy-baseline', async (req, res) => {
+    try {
+      const project = getProject(db, req.params.id);
+      if (!project) return sendApiError(res, 404, 'PROJECT_NOT_FOUND', 'not found');
+      const result = await enrollLegacyFoldyBaseline({
+        projectId: project.id,
+        projectRoot: resolveProjectDir(PROJECTS_DIR, project.id, project.metadata),
+        request: req.body,
+        readProjectMetadata: () => getProject(db, project.id)?.metadata ?? null,
+        compareAndSetProjectMetadata: (expected, replacement) => {
+          const result = db.prepare(
+            `UPDATE projects
+                SET metadata_json = ?, updated_at = ?
+              WHERE id = ? AND metadata_json = ?`,
+          ).run(JSON.stringify(replacement), Date.now(), project.id, JSON.stringify(expected));
+          if (result.changes !== 1) return false;
+          const updated = getProject(db, project.id);
+          return Boolean(updated && isDeepStrictEqual(updated.metadata ?? {}, replacement));
+        },
+      });
+      res.json(result);
+    } catch (err: any) {
+      if (err instanceof FoldyPromotionError) {
+        return sendApiError(res, err.status, err.code, err.message, { details: err.details });
+      }
+      sendApiError(res, 500, 'FOLDY_LEGACY_BASELINE_ENROLLMENT_FAILED', 'legacy Foldy baseline enrollment failed');
+    }
+  });
+
+  app.post('/api/projects/:id/foldy/repair-no-protected-ancestor', async (req, res) => {
+    try {
+      const project = getProject(db, req.params.id);
+      if (!project) return sendApiError(res, 404, 'PROJECT_NOT_FOUND', 'not found');
+      const result = await repairFoldyNoProtectedAncestor({
+        projectId: project.id,
+        projectRoot: resolveProjectDir(PROJECTS_DIR, project.id, project.metadata),
+        request: req.body,
+        readProjectMetadata: () => getProject(db, project.id)?.metadata ?? null,
+        compareAndSetProjectMetadata: (expected, replacement) => {
+          const result = db.prepare(
+            `UPDATE projects SET metadata_json = ?, updated_at = ? WHERE id = ? AND metadata_json = ?`,
+          ).run(JSON.stringify(replacement), Date.now(), project.id, JSON.stringify(expected));
+          if (result.changes !== 1) return false;
+          const updated = getProject(db, project.id);
+          return Boolean(updated && isDeepStrictEqual(updated.metadata ?? {}, replacement));
+        },
+      });
+      res.json(result);
+    } catch (err: any) {
+      if (err instanceof FoldyPromotionError) {
+        return sendApiError(res, err.status, err.code, err.message, { details: err.details });
+      }
+      sendApiError(res, 500, 'FOLDY_BASELINE_REPAIR_FAILED', 'Foldy baseline repair failed');
+    }
+  });
+
+  app.post('/api/projects/:id/foldy/promote', async (req, res) => {
+    try {
+      const project = getProject(db, req.params.id);
+      if (!project) return sendApiError(res, 404, 'PROJECT_NOT_FOUND', 'not found');
+      const result = await promoteFoldy({
+        projectId: project.id,
+        projectRoot: resolveProjectDir(PROJECTS_DIR, project.id, project.metadata),
+        request: req.body,
+        readProjectMetadata: () => getProject(db, project.id)?.metadata ?? null,
+        compareAndSetProjectMetadata: (expected, replacement) => {
+          const result = db.prepare(
+            `UPDATE projects
+                SET metadata_json = ?, updated_at = ?
+              WHERE id = ? AND metadata_json = ?`,
+          ).run(JSON.stringify(replacement), Date.now(), project.id, JSON.stringify(expected));
+          if (result.changes !== 1) return false;
+          const updated = getProject(db, project.id);
+          return Boolean(updated && isDeepStrictEqual(updated.metadata ?? {}, replacement));
+        },
+      });
+      res.json(result);
+    } catch (err: any) {
+      if (err instanceof FoldyPromotionError) {
+        return sendApiError(res, err.status, err.code, err.message, { details: err.details });
+      }
+      sendApiError(res, 500, 'FOLDY_PROMOTION_FAILED', 'Foldy promotion failed');
     }
   });
 
@@ -781,7 +894,7 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
   const { upload } = ctx.uploads;
   const { fs } = ctx.node;
   const { getProject } = ctx.projectStore;
-  const { listFiles, searchProjectFiles, readProjectFile, resolveProjectFilePath, parseByteRange, renameProjectFile, deleteProjectFile, writeProjectFile, sanitizeName, ensureProject } = ctx.projectFiles;
+  const { listFiles, searchProjectFiles, readProjectFile, resolveProjectFilePath, resolveProjectDir, parseByteRange, renameProjectFile, deleteProjectFile, writeProjectFile, sanitizeName, ensureProject } = ctx.projectFiles;
   const { buildDocumentPreview } = ctx.documents;
   const { validateArtifactManifestInput } = ctx.artifacts;
 
@@ -918,11 +1031,24 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
   app.delete('/api/projects/:id/raw/*', async (req, res) => {
     try {
       const project = getProject(db, req.params.id);
-      await deleteProjectFile(PROJECTS_DIR, req.params.id, (req.params as any)[0], project?.metadata);
+      const logicalPath = (req.params as any)[0];
+      await withGenericFoldyFileMutation({
+        projectId: req.params.id,
+        projectRoot: resolveProjectDir(PROJECTS_DIR, req.params.id, project?.metadata),
+        readProjectMetadata: () => getProject(db, req.params.id)?.metadata,
+        logicalPath,
+        operation: 'delete',
+        mutate: async (_guard, metadata) => {
+          await deleteProjectFile(PROJECTS_DIR, req.params.id, logicalPath, metadata);
+        },
+      });
       /** @type {import('@open-design/contracts').DeleteProjectFileResponse} */
       const body = { ok: true };
       res.json(body);
     } catch (err: any) {
+      if (err instanceof FoldyPromotionError) {
+        return sendApiError(res, err.status, err.code, err.message, { details: err.details });
+      }
       const status = err && err.code === 'ENOENT' ? 404 : 400;
       sendApiError(
         res,
@@ -1001,14 +1127,22 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
           const desiredName = sanitizeName(
             req.body?.name || req.file.originalname,
           );
-          const meta = await writeProjectFile(
-            PROJECTS_DIR,
-            req.params.id,
-            desiredName,
-            buf,
-            {},
-            uploadProject?.metadata,
-          );
+          const meta = await withGenericFoldyFileMutation({
+            projectId: req.params.id,
+            projectRoot: resolveProjectDir(PROJECTS_DIR, req.params.id, uploadProject?.metadata),
+            readProjectMetadata: () => getProject(db, req.params.id)?.metadata,
+            logicalPath: desiredName,
+            operation: 'write',
+            incomingBytes: buf,
+            mutate: (foldyGuard, metadata) => writeProjectFile(
+              PROJECTS_DIR,
+              req.params.id,
+              desiredName,
+              buf,
+              foldyGuard.forceCreateOnly ? { overwrite: false } : {},
+              metadata,
+            ),
+          });
           fs.promises.unlink(req.file.path).catch(() => {});
           /** @type {import('@open-design/contracts').ProjectFileResponse} */
           const body = { file: meta };
@@ -1041,29 +1175,40 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
           encoding === 'base64'
             ? Buffer.from(content, 'base64')
             : Buffer.from(content, 'utf8');
-        const meta = artifact === true
-          ? await createProjectArtifactFile({
-              projectsRoot: PROJECTS_DIR,
-              projectId: req.params.id,
-              input: { name, content, encoding, artifactManifest },
-              metadata: uploadProject?.metadata,
-              writeProjectFile,
-            })
-          : await writeProjectFile(
-              PROJECTS_DIR,
-              req.params.id,
-              name,
-              buf,
-              {
-                artifactManifest,
-                ...(overwrite === false ? { overwrite: false } : {}),
-              },
-              uploadProject?.metadata,
-            );
+        const meta = await withGenericFoldyFileMutation({
+          projectId: req.params.id,
+          projectRoot: resolveProjectDir(PROJECTS_DIR, req.params.id, uploadProject?.metadata),
+          readProjectMetadata: () => getProject(db, req.params.id)?.metadata,
+          logicalPath: name,
+          operation: 'write',
+          incomingBytes: buf,
+          mutate: (foldyGuard, metadata) => artifact === true
+            ? createProjectArtifactFile({
+                projectsRoot: PROJECTS_DIR,
+                projectId: req.params.id,
+                input: { name, content, encoding, artifactManifest },
+                metadata,
+                writeProjectFile,
+              })
+            : writeProjectFile(
+                PROJECTS_DIR,
+                req.params.id,
+                name,
+                buf,
+                {
+                  artifactManifest,
+                  ...(overwrite === false || foldyGuard.forceCreateOnly ? { overwrite: false } : {}),
+                },
+                metadata,
+              ),
+        });
         /** @type {import('@open-design/contracts').ProjectFileResponse} */
         const body = { file: meta };
         res.json(body);
       } catch (err: any) {
+        if (err instanceof FoldyPromotionError) {
+          return sendApiError(res, err.status, err.code, err.message, { details: err.details });
+        }
         if (err instanceof ArtifactRegressionError) {
           return sendApiError(res, 422, 'ARTIFACT_REGRESSION', err.message, {
             details: {
@@ -1095,17 +1240,38 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
         return sendApiError(res, 400, 'BAD_REQUEST', 'from and to required');
       }
       const project = getProject(db, req.params.id);
-      const result = await renameProjectFile(
-        PROJECTS_DIR,
-        req.params.id,
-        from,
-        to,
-        project?.metadata,
-      );
+      const result = await withGenericFoldyFileMutation({
+        projectId: req.params.id,
+        projectRoot: resolveProjectDir(PROJECTS_DIR, req.params.id, project?.metadata),
+        readProjectMetadata: () => getProject(db, req.params.id)?.metadata,
+        logicalPath: from,
+        destinationPath: to,
+        operation: 'rename',
+        mutate: (_guard, metadata) => renameProjectFile(
+          PROJECTS_DIR,
+          req.params.id,
+          from,
+          to,
+          metadata,
+        ),
+      });
       /** @type {import('@open-design/contracts').RenameProjectFileResponse} */
       const body = result;
       res.json(body);
     } catch (err: any) {
+      if (err instanceof FoldyPromotionError) {
+        if (err.code === 'FOLDY_PATH_ESCAPE') {
+          const missingRoot = err.message === 'project root is unavailable';
+          return sendApiError(
+            res,
+            missingRoot ? 404 : 400,
+            missingRoot ? 'FILE_NOT_FOUND' : 'BAD_REQUEST',
+            err.message,
+            { details: err.details },
+          );
+        }
+        return sendApiError(res, err.status, err.code, err.message, { details: err.details });
+      }
       if (err?.code === 'EEXIST') {
         return sendApiError(res, 409, 'CONFLICT', String(err?.message || err));
       }
@@ -1120,11 +1286,23 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
   app.delete('/api/projects/:id/files/:name', async (req, res) => {
     try {
       const delProject = getProject(db, req.params.id);
-      await deleteProjectFile(PROJECTS_DIR, req.params.id, req.params.name, delProject?.metadata);
+      await withGenericFoldyFileMutation({
+        projectId: req.params.id,
+        projectRoot: resolveProjectDir(PROJECTS_DIR, req.params.id, delProject?.metadata),
+        readProjectMetadata: () => getProject(db, req.params.id)?.metadata,
+        logicalPath: req.params.name,
+        operation: 'delete',
+        mutate: async (_guard, metadata) => {
+          await deleteProjectFile(PROJECTS_DIR, req.params.id, req.params.name, metadata);
+        },
+      });
       /** @type {import('@open-design/contracts').DeleteProjectFileResponse} */
       const body = { ok: true };
       res.json(body);
     } catch (err: any) {
+      if (err instanceof FoldyPromotionError) {
+        return sendApiError(res, err.status, err.code, err.message, { details: err.details });
+      }
       const status = err && err.code === 'ENOENT' ? 404 : 400;
       sendApiError(
         res,

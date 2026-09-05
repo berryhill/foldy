@@ -73,6 +73,17 @@ describe('parseRoute / buildPath (issue #1505)', () => {
     expect(buildPath(route)).toBe('/projects/p-1/conversations/conv-abc/files/index.html');
   });
 
+  it('parses the exact conversation-file direct-load shape with suffixes', () => {
+    expect(parseRoute(
+      '/projects/9438a121-b8b1-4dd2-b054-f03d344d1b0d/conversations/82c2b984-e24a-48ff-895a-47a0431dccbc/files/index.html?preview=1#foldy',
+    )).toEqual({
+      kind: 'project',
+      projectId: '9438a121-b8b1-4dd2-b054-f03d344d1b0d',
+      conversationId: '82c2b984-e24a-48ff-895a-47a0431dccbc',
+      fileName: 'index.html',
+    });
+  });
+
   it('percent-encodes ids and file names with reserved characters', () => {
     const route: Route = {
       kind: 'project',
@@ -104,6 +115,27 @@ describe('parseRoute / buildPath (issue #1505)', () => {
       projectId: 'p-1',
       conversationId: 'c-2',
       fileName: null,
+    });
+  });
+
+  it('decodes file path components without allowing encoded separators or traversal', () => {
+    expect(parseRoute('/projects/p-1/conversations/c-2/files/design%20files/index.html')).toEqual({
+      kind: 'project',
+      projectId: 'p-1',
+      conversationId: 'c-2',
+      fileName: 'design files/index.html',
+    });
+    expect(parseRoute('/projects/p-1/conversations/c-2/files/%2e%2e/index.html')).toEqual({
+      kind: 'home',
+      view: 'home',
+    });
+    expect(parseRoute('/projects/p-1/conversations/c-2/files/nested%2Findex.html')).toEqual({
+      kind: 'home',
+      view: 'home',
+    });
+    expect(parseRoute('/projects/%E0%A4%A/conversations/c-2/files/index.html')).toEqual({
+      kind: 'home',
+      view: 'home',
     });
   });
 

@@ -4,6 +4,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { App } from '../../src/App';
+import type { Route } from '../../src/router';
 import type { AppConfig } from '../../src/types';
 import {
   fetchComposioConfigFromDaemon,
@@ -21,10 +22,10 @@ import {
   fetchPromptTemplates,
   fetchSkills,
 } from '../../src/providers/registry';
-import { listProjects, listTemplates } from '../../src/state/projects';
+import { getProject, listProjects, listTemplates } from '../../src/state/projects';
 
 const navigateMock = vi.fn();
-const useRouteMock = vi.fn(() => ({ kind: 'home' as const, view: 'home' as const }));
+const useRouteMock = vi.fn<() => Route>(() => ({ kind: 'home', view: 'home' }));
 
 vi.mock('../../src/router', () => ({
   navigate: (...args: unknown[]) => navigateMock(...args),
@@ -42,7 +43,13 @@ vi.mock('../../src/components/EntryView', () => ({
 }));
 
 vi.mock('../../src/components/ProjectView', () => ({
-  ProjectView: () => <div>Project view</div>,
+  ProjectView: ({
+    routeConversationId,
+    routeFileName,
+  }: {
+    routeConversationId: string | null;
+    routeFileName: string | null;
+  }) => <div>Project view: {routeConversationId}/{routeFileName}</div>,
 }));
 
 vi.mock('../../src/components/pet/PetOverlay', () => ({
@@ -112,6 +119,7 @@ vi.mock('../../src/state/projects', async () => {
   );
   return {
     ...actual,
+    getProject: vi.fn(),
     listProjects: vi.fn(),
     listTemplates: vi.fn(),
   };
@@ -138,6 +146,7 @@ const mockedFetchAppVersionInfo = vi.mocked(fetchAppVersionInfo);
 const mockedFetchDesignSystems = vi.mocked(fetchDesignSystems);
 const mockedFetchPromptTemplates = vi.mocked(fetchPromptTemplates);
 const mockedFetchSkills = vi.mocked(fetchSkills);
+const mockedGetProject = vi.mocked(getProject);
 const mockedListProjects = vi.mocked(listProjects);
 const mockedListTemplates = vi.mocked(listTemplates);
 const mockedFetchComposioConfigFromDaemon = vi.mocked(fetchComposioConfigFromDaemon);
@@ -167,12 +176,14 @@ const baseConfig: AppConfig = {
 
 describe('App media provider sync flows', () => {
   beforeEach(() => {
+    useRouteMock.mockReturnValue({ kind: 'home', view: 'home' });
     mockedDaemonIsLive.mockResolvedValue(true);
     mockedFetchAgents.mockResolvedValue([]);
     mockedFetchSkills.mockResolvedValue([]);
     mockedFetchDesignSystems.mockResolvedValue([]);
     mockedFetchPromptTemplates.mockResolvedValue([]);
     mockedFetchAppVersionInfo.mockResolvedValue(null);
+    mockedGetProject.mockResolvedValue(null);
     mockedListProjects.mockResolvedValue([]);
     mockedListTemplates.mockResolvedValue([]);
     mockedFetchComposioConfigFromDaemon.mockResolvedValue(null);
@@ -213,6 +224,37 @@ describe('App media provider sync flows', () => {
         daemonProviders: {},
       });
     });
+  });
+
+  it('resolves a direct conversation-file route by exact project id instead of rendering Home', async () => {
+    useRouteMock.mockReturnValue({
+      kind: 'project',
+      projectId: '9438a121-b8b1-4dd2-b054-f03d344d1b0d',
+      conversationId: '82c2b984-e24a-48ff-895a-47a0431dccbc',
+      fileName: 'index.html',
+    });
+    mockedGetProject.mockResolvedValue({
+      id: '9438a121-b8b1-4dd2-b054-f03d344d1b0d',
+      name: 'Foldy',
+      skillId: null,
+      designSystemId: null,
+      createdAt: 1,
+      updatedAt: 1,
+    });
+
+    render(<App />);
+
+    expect(screen.getByText('Loading project…')).toBeTruthy();
+    await waitFor(() => {
+      expect(mockedGetProject).toHaveBeenCalledWith('9438a121-b8b1-4dd2-b054-f03d344d1b0d');
+      expect(screen.getByText(
+        'Project view: 82c2b984-e24a-48ff-895a-47a0431dccbc/index.html',
+      )).toBeTruthy();
+    });
+    expect(navigateMock).not.toHaveBeenCalledWith(
+      { kind: 'home', view: 'home' },
+      { replace: true },
+    );
   });
 
   it('forces a media provider sync when settings are saved', async () => {

@@ -42,10 +42,18 @@ function resolveDevTsconfigPath() {
 
 const DEV_TSCONFIG_PATH = resolveDevTsconfigPath();
 
+// When serving behind a reverse proxy at a subpath (e.g. tailscale serve /od),
+// set OD_WEB_BASE_PATH=/od so Next.js generates all asset/route URLs with the
+// prefix baked in. Default: no prefix (root serving).
+const BASE_PATH = process.env.OD_WEB_BASE_PATH || '';
+
+const SPA_FALLBACK_REWRITE = { source: '/:path*', destination: '/' } as const;
+
 const nextConfig: NextConfig = {
   allowedDevOrigins: ['127.0.0.1'],
   outputFileTracingRoot: WORKSPACE_ROOT,
   reactStrictMode: true,
+  ...(BASE_PATH ? { assetPrefix: BASE_PATH } : {}),
   turbopack: {
     root: WORKSPACE_ROOT,
   },
@@ -65,6 +73,9 @@ const nextConfig: NextConfig = {
     : webOutputMode === 'standalone'
       ? {
         output: 'standalone' as const,
+        async rewrites() {
+          return { fallback: [SPA_FALLBACK_REWRITE] };
+        },
       }
       : !isProd
       ? {
@@ -73,17 +84,24 @@ const nextConfig: NextConfig = {
           // proxy so the SPA can hit /api, /artifacts, and /frames without
           // CORS gymnastics. SSE on /api/chat works through this rewrite
           // because Next.js's dev server streams responses unbuffered.
-          return [
-            { source: '/api/:path*', destination: `${DAEMON_ORIGIN}/api/:path*` },
-            { source: '/artifacts/:path*', destination: `${DAEMON_ORIGIN}/artifacts/:path*` },
-            { source: '/frames/:path*', destination: `${DAEMON_ORIGIN}/frames/:path*` },
-          ];
+          return {
+            beforeFiles: [
+              { source: '/api/:path*', destination: `${DAEMON_ORIGIN}/api/:path*` },
+              { source: '/artifacts/:path*', destination: `${DAEMON_ORIGIN}/artifacts/:path*` },
+              { source: '/frames/:path*', destination: `${DAEMON_ORIGIN}/frames/:path*` },
+            ],
+            fallback: [SPA_FALLBACK_REWRITE],
+          };
         },
         devIndicators: {
           position: 'bottom-right',
         },
       }
-      : {}),
+      : {
+        async rewrites() {
+          return { fallback: [SPA_FALLBACK_REWRITE] };
+        },
+      }),
 };
 
 export default nextConfig;

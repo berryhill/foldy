@@ -57,6 +57,7 @@ import {
   deleteProject as deleteProjectApi,
   importClaudeDesignZip,
   importFolderProject,
+  getProject,
   listProjects,
   listTemplates,
   deleteTemplate,
@@ -974,27 +975,33 @@ export function App() {
       ? (projects.find((p) => p.id === route.projectId) ?? null)
       : null;
 
-  // Deep-linked route to a project we don't have yet (e.g. after a refresh
-  // that finishes after the project list comes back). Fetch it in the
-  // background so the view can render rather than bouncing to home.
+  // Resolve a deep-linked project by its routed id. A direct conversation-file
+  // load must not depend on that project happening to be present in the list
+  // response (or briefly render the entry/home screen while data is loading).
   useEffect(() => {
     if (route.kind !== 'project') return;
     if (activeProject) return;
-    if (!projects.length && !daemonLive) return;
-    if (projects.some((p) => p.id === route.projectId)) return;
+    // Let the bootstrap list settle first so its response cannot overwrite an
+    // exact-id result that resolved slightly earlier.
+    if (projectsLoading) return;
     let cancelled = false;
     (async () => {
-      const list = await listProjects();
+      const project = await getProject(route.projectId);
       if (cancelled) return;
-      setProjects(list);
-      if (!list.find((p) => p.id === route.projectId)) {
+      if (project) {
+        setProjects((current) => {
+          const existing = current.findIndex((item) => item.id === project.id);
+          if (existing === -1) return [...current, project];
+          return current.map((item) => (item.id === project.id ? project : item));
+        });
+      } else {
         navigate({ kind: 'home', view: 'home' }, { replace: true });
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [route, activeProject, projects, daemonLive]);
+  }, [route, activeProject, projectsLoading]);
 
   const openSettings = useCallback((section: SettingsSection = 'execution') => {
     if (section === 'composio' || section === 'mcpClient' || section === 'integrations') {
@@ -1178,6 +1185,10 @@ export function App() {
         onProjectsRefresh={refreshProjects}
       />
     );
+  } else if (route.kind === 'project') {
+    // Never misrepresent a valid direct project/file URL as Home while the
+    // exact project lookup above is in flight.
+    appMain = <div className="od-loading-shell">Loading project…</div>;
   } else {
     appMain = (
       <EntryView

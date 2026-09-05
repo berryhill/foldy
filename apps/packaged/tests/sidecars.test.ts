@@ -99,6 +99,34 @@ describe('packaged child Vite+ environment forwarding', () => {
     expect(env.RANDOM_INTERNAL_FLAG).toBeUndefined();
   });
 
+  it('forwards only the public Foldy receipt verification keys', () => {
+    const env = resolvePackagedChildBaseEnv({
+      OD_FOLDY_WREN_PUBLIC_KEY: 'wren-public-pem',
+      OD_FOLDY_ASSURANCE_PUBLIC_KEY: 'assurance-public-pem',
+      OD_FOLDY_WREN_PRIVATE_KEY: 'must-not-forward',
+      OD_FOLDY_ASSURANCE_PRIVATE_KEY: 'must-not-forward',
+    });
+
+    expect(env).toMatchObject({
+      OD_FOLDY_WREN_PUBLIC_KEY: 'wren-public-pem',
+      OD_FOLDY_ASSURANCE_PUBLIC_KEY: 'assurance-public-pem',
+    });
+    expect(env.OD_FOLDY_WREN_PRIVATE_KEY).toBeUndefined();
+    expect(env.OD_FOLDY_ASSURANCE_PRIVATE_KEY).toBeUndefined();
+  });
+
+  it('forwards the configured browser origin to the packaged daemon', () => {
+    const env = resolvePackagedChildBaseEnv({
+      OD_ALLOWED_ORIGINS: 'https://silas-workstation.taild7c550.ts.net:8443',
+      RANDOM_INTERNAL_FLAG: 'drop-me',
+    });
+
+    expect(env.OD_ALLOWED_ORIGINS).toBe(
+      'https://silas-workstation.taild7c550.ts.net:8443',
+    );
+    expect(env.RANDOM_INTERNAL_FLAG).toBeUndefined();
+  });
+
   it('adds custom VP_HOME/bin to the packaged PATH builder', () => {
     const vpHome = mkdtempSync(join(tmpdir(), 'od-packaged-vp-home-'));
     const originalVpHome = process.env.VP_HOME;
