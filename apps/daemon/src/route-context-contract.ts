@@ -9,6 +9,8 @@ import type { RegisterMediaRoutesDeps } from './media-routes.js';
 import type { RegisterProjectArtifactRoutesDeps, RegisterProjectFileRoutesDeps, RegisterProjectRoutesDeps, RegisterProjectUploadRoutesDeps } from './project-routes.js';
 import type { RegisterRoutineRoutesDeps } from './routine-routes.js';
 import type { RegisterStaticResourceRoutesDeps } from './static-resource-routes.js';
+import type { RegisterFoldyPublicationRoutesDeps } from './routes/foldy-publication.js';
+import type { RegisterFoldyMcpRoutesDeps } from './routes/foldy-mcp.js';
 
 type AllRegisteredRouteDeps =
   & RegisterActiveContextRoutesDeps
@@ -16,6 +18,8 @@ type AllRegisteredRouteDeps =
   & RegisterDeployRoutesDeps
   & RegisterDeploymentCheckRoutesDeps
   & RegisterFinalizeRoutesDeps
+  & RegisterFoldyPublicationRoutesDeps
+  & RegisterFoldyMcpRoutesDeps
   & RegisterImportRoutesDeps
   & RegisterLiveArtifactRoutesDeps
   & RegisterMcpRoutesDeps

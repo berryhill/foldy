@@ -270,6 +270,10 @@ function printRootHelp() {
       Designed to be invoked by a code agent - picks up OD_DAEMON_URL
       and OD_PROJECT_ID from the env that the daemon injected on spawn.
 
+  od mcp foldy
+      Start the project-scoped Foldy MCP server. Supply its grant only through
+      OD_FOLDY_MCP_TOKEN; client configuration never embeds the credential.
+
   od mcp [--daemon-url <url>]
       Run a stdio MCP server that proxies project tool calls to a
       running Open Design daemon. Wire it into a coding agent
@@ -731,6 +735,16 @@ files folder so the FileViewer can preview them immediately.`);
 // ---------------------------------------------------------------------------
 
 async function runMcp(args) {
+  if (args[0] === 'foldy') {
+    if (args.length !== 1) {
+      console.error('Usage: od mcp foldy (token must be supplied only through OD_FOLDY_MCP_TOKEN)');
+      process.exit(2);
+    }
+    const { runFoldyMcpServer } = await import('./foldy-mcp/stdio-server.js');
+    await runFoldyMcpServer();
+    return;
+  }
+
   let flags;
   try {
     flags = parseFlags(args, {

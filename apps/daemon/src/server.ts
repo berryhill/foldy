@@ -327,6 +327,22 @@ import { registerFinalizeRoutes, registerImportRoutes, registerProjectExportRout
 import { registerChatRoutes } from './chat-routes.js';
 import { registerStaticResourceRoutes } from './static-resource-routes.js';
 import { registerRoutineRoutes, routineDbRowToContract } from './routine-routes.js';
+import { registerFoldyPublicationRoutes, type FoldyPublicationRoutesService } from './routes/foldy-publication.js';
+import { registerFoldyMcpRoutes, type FoldyMcpRoutesService } from './routes/foldy-mcp.js';
+import { registerFoldyCynderRoutes } from './routes/foldy-cynder.js';
+import { FoldyPublicationStore } from './foldy-publications/store.js';
+import { createFoldyMcpGrantStore } from './foldy-mcp/grants.js';
+import {
+  CynderDeploymentError,
+  FoldyCynderDeploymentService,
+  HttpCynderDeploymentAdapter,
+  type CynderDeploymentAdapter,
+} from './foldy-deployments/cynder.js';
+import {
+  createBrowserPasswordAccess,
+  installBrowserPasswordGate,
+  registerBrowserPasswordAccessRoutes,
+} from './foldy-access/browser-password.js';
 import { assertServerContextSatisfiesRoutes } from './route-context-contract.js';
 import { configureConnectorCredentialStore, ConnectorServiceError, FileConnectorCredentialStore } from './connectors/service.js';
 import { composioConnectorProvider } from './connectors/composio.js';
@@ -2507,6 +2523,11 @@ export async function startServer({
   }
 
   const app = express();
+  // Password bootstrap must be reachable before the byte gate. Every browser,
+  // static, API and published-byte route registered below remains fail-closed.
+  const browserPasswordAccess = await createBrowserPasswordAccess({ dataRoot: RUNTIME_DATA_DIR });
+  registerBrowserPasswordAccessRoutes(app, browserPasswordAccess);
+  app.use(installBrowserPasswordGate(browserPasswordAccess));
   app.use(express.json({ limit: '4mb' }));
 
   // Plan §3.K1 — bearer-token middleware.
@@ -2520,6 +2541,17 @@ export async function startServer({
     const openProbePaths = new Set(['/api/health', '/api/version', '/api/daemon/status']);
     app.use('/api', (req, res, next) => {
       if (openProbePaths.has(req.path)) return next();
+      // These are the exact project-bearer transport endpoints. Grant
+      // administration deliberately remains under daemon/browser authority.
+      const isFoldyBearerTransport =
+        (req.method === 'GET' && (
+          req.path === '/foldy/mcp/session'
+          || req.path === '/foldy/mcp/resources'
+          || req.path === '/foldy/mcp/resources/read'
+        ))
+        || (req.method === 'POST' && /^\/foldy\/mcp\/operations\/[^/]+$/.test(req.path));
+      if (isFoldyBearerTransport) return next();
+      if (!req.path.startsWith('/mcp') && browserPasswordAccess.isAuthorized(req)) return next();
       // Loopback short-circuit. We ignore the proxied X-Forwarded-For
       // header here because a reverse proxy MUST always forward the
       // bearer; the loopback bypass exists for the localhost desktop
@@ -3634,6 +3666,95 @@ export async function startServer({
     http: httpDeps,
     projectStore: projectStoreDeps,
   });
+
+  // Foldy product operations. Keep publication state, browser access,
+  // project-scoped MCP grants, and Cynder deployment as daemon-owned
+  // surfaces rather than allowing generated artifacts to self-administer.
+  const foldyPublication: FoldyPublicationRoutesService = {
+    publicationStore: new FoldyPublicationStore({
+      rootDir: path.join(RUNTIME_DATA_DIR, 'foldy-publications'),
+    }),
+    resolveProject: (projectId) => getProject(db, projectId),
+    resolveProjectRoot: (project) => resolveProjectDir(
+      PROJECTS_DIR,
+      project.id,
+      project.metadata,
+    ),
+    resolveActorId: () => 'local-user',
+  };
+  registerFoldyPublicationRoutes(app, { foldyPublication });
+
+  const foldyMcpGrants = await createFoldyMcpGrantStore({ dataRoot: RUNTIME_DATA_DIR });
+  const unavailableCynder = (): never => {
+    throw new CynderDeploymentError(
+      503,
+      'FOLDY_CYNDER_NOT_CONFIGURED',
+      'Cynder deployment endpoint and credential reference are not configured',
+    );
+  };
+  const cynderAdapter: CynderDeploymentAdapter =
+    process.env.OD_CYNDER_ENDPOINT && process.env.OD_CYNDER_SECRET_ENV
+      ? new HttpCynderDeploymentAdapter({
+          endpoint: process.env.OD_CYNDER_ENDPOINT,
+          secretEnv: process.env.OD_CYNDER_SECRET_ENV,
+        })
+      : {
+          preflight: unavailableCynder,
+          deployImmutable: unavailableCynder,
+          activate: unavailableCynder,
+          inspect: unavailableCynder,
+          verifyHealth: unavailableCynder,
+          rollback: unavailableCynder,
+        };
+  const foldyCynderDeployments = new FoldyCynderDeploymentService({
+    dataRoot: RUNTIME_DATA_DIR,
+    adapter: cynderAdapter,
+    getRevision: (projectId, revisionId) =>
+      foldyPublication.publicationStore.getRevision(projectId, revisionId),
+    readRevisionFile: async (projectId, revisionId, file) =>
+      (await foldyPublication.publicationStore.resolveRevisionFile(projectId, revisionId, file)).bytes,
+  });
+  const isFormalFoldyProject = (projectId: string): boolean => {
+    const project = getProject(db, projectId);
+    const metadata = project?.metadata;
+    return Boolean(
+      project
+      && metadata
+      && typeof metadata === 'object'
+      && (metadata as { foldy?: unknown }).foldy === true,
+    );
+  };
+  registerFoldyCynderRoutes(app, {
+    foldyCynder: {
+      deployments: foldyCynderDeployments,
+      grants: foldyMcpGrants,
+      isLocalAuthority: (req) => browserPasswordAccess.isAdministrativeRequest(req),
+      isFormalProject: isFormalFoldyProject,
+    },
+  });
+  const foldyMcp: FoldyMcpRoutesService = {
+    grants: foldyMcpGrants,
+    command: OD_BIN,
+    getDaemonUrl: () => daemonUrlRef.current,
+    isLocalAuthority: (req) => browserPasswordAccess.isAdministrativeRequest(req),
+    resolveProject: (projectId) => getProject(db, projectId),
+    resolveProjectRoot: (project) =>
+      resolveProjectDir(PROJECTS_DIR, project.id, project.metadata),
+    publicationStore: foldyPublication.publicationStore,
+    deploy: (projectId, input) => foldyCynderDeployments.deploy({
+      projectId,
+      revisionId: typeof input.revisionId === 'string' ? input.revisionId : '',
+      environment: typeof input.environment === 'string' ? input.environment : '',
+      idempotencyKey: typeof input.idempotencyKey === 'string' ? input.idempotencyKey : '',
+      expectedActiveProviderRevisionId:
+        input.expectedActiveProviderRevisionId === null
+        || typeof input.expectedActiveProviderRevisionId === 'string'
+          ? input.expectedActiveProviderRevisionId
+          : null,
+    }),
+  };
+  registerFoldyMcpRoutes(app, { foldyMcp });
+
   registerProjectRoutes(app, {
     db,
     design,

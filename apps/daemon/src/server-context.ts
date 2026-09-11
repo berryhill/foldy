@@ -2,6 +2,8 @@ import type { Express } from 'express';
 import type { SkillInfo } from './skills.js';
 import type { DesignSystemSummary } from './design-systems.js';
 import type { RoutineRoutesService } from './routine-routes.js';
+import type { FoldyPublicationRoutesService } from './routes/foldy-publication.js';
+import type { FoldyMcpRoutesService } from './routes/foldy-mcp.js';
 
 export interface HttpDeps {
   createSseResponse: (...args: any[]) => any;
@@ -62,6 +64,8 @@ export interface ServerContext {
   design: any;
   http: HttpDeps;
   paths: PathDeps;
+  foldyPublication: FoldyPublicationRoutesService;
+  foldyMcp: FoldyMcpRoutesService;
   ids: any;
   uploads: any;
   node: any;

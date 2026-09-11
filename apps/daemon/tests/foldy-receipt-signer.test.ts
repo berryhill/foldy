@@ -94,12 +94,19 @@ describe('signFoldyReceipt', () => {
   it('refuses a private key not owned by the signing process user', async () => {
     const { keyPath } = await fixture();
     const owner = (await stat(keyPath)).uid;
-    const getuid = vi.spyOn(process, 'geteuid').mockReturnValue(owner + 1);
+    const originalGeteuid = process.geteuid;
+    Object.defineProperty(process, 'geteuid', {
+      configurable: true,
+      value: () => owner + 1,
+    });
     try {
       await expect(signFoldyReceipt(unsignedReceipt('foldy-assurance.v1'), { type: 'file', path: keyPath }))
         .rejects.toMatchObject({ code: 'FOLDY_SIGNER_INVALID_KEY_OWNER' });
     } finally {
-      getuid.mockRestore();
+      Object.defineProperty(process, 'geteuid', {
+        configurable: true,
+        value: originalGeteuid,
+      });
     }
   });
 
