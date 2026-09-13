@@ -5,8 +5,10 @@ import {
   sign,
   type KeyObject,
 } from 'node:crypto';
+import type http from 'node:http';
 import { mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import express from 'express';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 
 import {
@@ -27,6 +29,8 @@ import {
   type FoldyReceipt,
 } from '../src/foldy-promotion.js';
 import { registerProjectRoutes } from '../src/project-routes.js';
+import { FoldyPublicationStore } from '../src/foldy-publications/store.js';
+import { registerFoldyPublicationRoutes } from '../src/routes/foldy-publication.js';
 
 const roots: string[] = [];
 const projectId = 'foldy-project';
@@ -464,7 +468,100 @@ describe('provider-side Foldy promotion gate', () => {
       protectedSurfacesVerified: 1,
     });
     for (const logicalPath of rootFiles) expect(await readFile(path.join(f.root, logicalPath))).toEqual(f.candidateBefore[logicalPath]);
-    expect(f.metadataStore.current).toMatchObject({ revisionId: candidateRevisionId, currentRevisionId: candidateRevisionId });
+    expect(f.metadataStore.current).toMatchObject({
+      revisionId: candidateRevisionId,
+      currentRevisionId: candidateRevisionId,
+      publicationFiles: ['workbook.json', 'index.html', 'index.html.artifact.json'],
+    });
+    expect((f.metadataStore.current.publicationFiles as string[]).filter((file) => file === entryFile)).toHaveLength(1);
+  });
+
+  it('carries the promoted root-file closure through immutable save, publish, and serving', async () => {
+    const f = await fixture();
+    const candidateRoot = path.join(f.root, 'revisions', candidateRevisionId);
+    const dependencies: Record<string, string> = {
+      'styles/site.css': '@font-face{src:url(../assets/site.woff2)}main{background:url(../assets/bg.png)}',
+      'assets/site.woff2': 'font-bytes',
+      'assets/bg.png': 'image-bytes',
+      'scripts/app.js': 'import { boot } from "./boot.js"; boot();',
+      'scripts/boot.js': 'export const boot = () => {};',
+      'pages/about.html': '<h1>About</h1>',
+    };
+    await writeFile(path.join(candidateRoot, entryFile), [
+      '<link rel="stylesheet" href="./styles/site.css">',
+      '<script type="module" src="./scripts/app.js"></script>',
+      '<a href="./pages/about.html">About</a>',
+      '<img src="data:image/png;base64,AAAA"><img src="../../../escape.png">',
+      '<script src="https://cdn.example/app.js"></script>',
+    ].join(''));
+    for (const [logicalPath, contents] of Object.entries(dependencies)) {
+      await mkdir(path.dirname(path.join(candidateRoot, logicalPath)), { recursive: true });
+      await writeFile(path.join(candidateRoot, logicalPath), contents);
+      f.request.rootFiles.push(logicalPath);
+    }
+    const workbookPath = path.join(candidateRoot, 'workbook.json');
+    const workbook = JSON.parse(await readFile(workbookPath, 'utf8'));
+    workbook.revisions.at(-1).bundleSha256 = null;
+    await writeFile(workbookPath, JSON.stringify(workbook));
+    f.request.candidateBundleSha256 = hashBundle(await filesAt(candidateRoot, f.request.rootFiles));
+    workbook.revisions.at(-1).bundleSha256 = f.request.candidateBundleSha256;
+    await writeFile(workbookPath, JSON.stringify(workbook));
+    const binding = {
+      project_id: projectId,
+      workbook_id: 'workbook_alpha',
+      baseline_revision_id: currentRevisionId,
+      candidate_revision_id: candidateRevisionId,
+      contract: { version: 'foldy-promotion.v1' as const, entry_file: entryFile, root_files: f.request.rootFiles },
+      bundle_sha256: f.request.candidateBundleSha256,
+      protected_manifest_sha256: hashProtectedSurfaceContract(f.request.protectedSurfaces),
+    };
+    f.request.wrenReceipt = signedReceipt('foldy-wren-review.v1', 'wren-ashford', wrenPrivateKey, binding);
+    f.request.assuranceReceipt = signedReceipt('foldy-assurance.v1', 'independent-reviewer', assurancePrivateKey, binding);
+    await runPromotion(f);
+    expect(f.metadataStore.current.publicationFiles).toEqual(f.request.rootFiles);
+
+    let publicationId = 0;
+    const store = new FoldyPublicationStore({
+      rootDir: path.join(f.root, '.publication-store'),
+      randomId: () => `publication_${++publicationId}`,
+    });
+    const revision = await store.saveRevision({
+      projectId,
+      projectRoot: f.root,
+      entryFile,
+      publicationFiles: f.metadataStore.current.publicationFiles!,
+      expectedLatestRevisionId: null,
+      actorId: 'author',
+    });
+    expect(revision.files.map((file) => file.path)).toEqual([...f.request.rootFiles].sort((a, b) => a.localeCompare(b)));
+    let review = await store.requestReview({ projectId, revisionId: revision.revisionId, expectedLatestRevisionId: revision.revisionId, actorId: 'author' });
+    review = await store.decideReview({ projectId, revisionId: revision.revisionId, reviewId: review.reviewId, expectedReviewVersion: review.version, decision: 'approved', actorId: 'reviewer' });
+    expect(review.status).toBe('approved');
+    await store.publish({ projectId, revisionId: revision.revisionId, expectedPublishedGeneration: 0, actorId: 'publisher' });
+
+    const app = express();
+    registerFoldyPublicationRoutes(app, { foldyPublication: {
+      publicationStore: store,
+      resolveProject: (id) => id === projectId ? { id, metadata: f.metadataStore.current } : null,
+      resolveProjectRoot: () => f.root,
+      resolveActorId: () => 'actor',
+    } });
+    const server = await new Promise<http.Server>((resolve) => {
+      const listening = app.listen(0, () => resolve(listening));
+    });
+    try {
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('test server did not bind');
+      for (const logicalPath of f.request.rootFiles) {
+        const response = await fetch(`http://127.0.0.1:${address.port}/p/${projectId}/${logicalPath}`);
+        expect(response.status, logicalPath).toBe(200);
+      }
+      for (const rejected of ['escape.png', 'unrelated.txt']) {
+        expect((await fetch(`http://127.0.0.1:${address.port}/p/${projectId}/${rejected}`)).status).toBe(404);
+      }
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
   });
 
   it('rejects caller-forged Wren and assurance receipt fields', async () => {
@@ -907,6 +1004,7 @@ describe('safe legacy Foldy baseline enrollment', () => {
       revisionId: currentRevisionId,
       currentRevisionId,
       entryFile,
+      publicationFiles: ['workbook.json', 'index.html', 'index.html.artifact.json'],
     });
   });
 

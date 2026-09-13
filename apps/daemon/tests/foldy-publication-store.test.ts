@@ -149,6 +149,54 @@ test('publishes and rolls back with CAS while preserving prior published bytes o
   assert.deepEqual(state.transitions.map((item) => item.kind), ['publish', 'publish', 'rollback']);
 });
 
+test('resolves the published entry identity and bytes atomically against a concurrent rollback', async () => {
+  const f = await fixture();
+  const r1 = await f.store.saveRevision({ projectId: 'p', projectRoot: f.projectRoot, entryFile: 'index.html', expectedLatestRevisionId: null, actorId: 'author' });
+  let review = await f.store.requestReview({ projectId: 'p', revisionId: r1.revisionId, actorId: 'author', expectedLatestRevisionId: r1.revisionId });
+  await f.store.decideReview({ projectId: 'p', revisionId: r1.revisionId, reviewId: review.reviewId, decision: 'approved', actorId: 'reviewer', expectedReviewVersion: review.version });
+  await f.store.publish({ projectId: 'p', revisionId: r1.revisionId, expectedPublishedGeneration: 0, actorId: 'publisher' });
+
+  await writeFile(path.join(f.projectRoot, 'alternate.xhtml'), '<html>R2</html>');
+  const r2 = await f.store.saveRevision({ projectId: 'p', projectRoot: f.projectRoot, entryFile: 'alternate.xhtml', expectedLatestRevisionId: r1.revisionId, actorId: 'author' });
+  review = await f.store.requestReview({ projectId: 'p', revisionId: r2.revisionId, actorId: 'author', expectedLatestRevisionId: r2.revisionId });
+  await f.store.decideReview({ projectId: 'p', revisionId: r2.revisionId, reviewId: review.reviewId, decision: 'approved', actorId: 'reviewer', expectedReviewVersion: review.version });
+  await f.store.publish({ projectId: 'p', revisionId: r2.revisionId, expectedPublishedGeneration: 1, actorId: 'publisher' });
+
+  let releaseSelection!: () => void;
+  const selectionReleased = new Promise<void>((resolve) => { releaseSelection = resolve; });
+  let selected!: () => void;
+  const entrySelected = new Promise<void>((resolve) => { selected = resolve; });
+  const resolvingStore = new FoldyPublicationStore({
+    rootDir: f.rootDir,
+    testHooks: {
+      afterPublishedEntrySelected: async () => {
+        selected();
+        await selectionReleased;
+      },
+    },
+  });
+
+  const resolving = resolvingStore.resolvePublishedEntry('p');
+  await entrySelected;
+  let rollbackFinished = false;
+  const rollback = f.store.rollback({
+    projectId: 'p', targetRevisionId: r1.revisionId, expectedPublishedGeneration: 2, actorId: 'publisher',
+  }).then((transition) => {
+    rollbackFinished = true;
+    return transition;
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(rollbackFinished, false);
+
+  releaseSelection();
+  const resolved = await resolving;
+  assert.equal(resolved.revisionId, r2.revisionId);
+  assert.equal(resolved.path, 'alternate.xhtml');
+  assert.equal(resolved.bytes.toString(), '<html>R2</html>');
+  await rollback;
+  assert.equal(rollbackFinished, true);
+});
+
 test('serializes per-project transitions and rejects stale revision CAS', async () => {
   const f = await fixture();
 

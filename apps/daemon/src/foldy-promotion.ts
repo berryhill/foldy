@@ -13,6 +13,7 @@ export type FoldyProjectMetadata = Record<string, unknown> & {
   currentRevisionId?: string;
   workbookId?: string;
   entryFile?: string;
+  publicationFiles?: string[];
   foldy?: boolean;
 };
 
@@ -745,6 +746,7 @@ export async function enrollLegacyFoldyBaseline(
       revisionId: authoritativeCurrent,
       currentRevisionId: authoritativeCurrent,
       entryFile,
+      publicationFiles: [...new Set(rootFileSources.map(({ sourcePath }) => sourcePath))],
     };
     let baselineInstalled = false;
     let controlInstalled = false;
@@ -919,7 +921,8 @@ export async function repairFoldyNoProtectedAncestor(
     }];
     const repairEntry = (repairWorkbook.revisions as Record<string, unknown>[]).at(-1)!;
     const repairedMetadata = { ...metadata, foldy: true, workbookId: workbook.workbookId,
-      revisionId: request.repairRevisionId, currentRevisionId: request.repairRevisionId, entryFile };
+      revisionId: request.repairRevisionId, currentRevisionId: request.repairRevisionId, entryFile,
+      publicationFiles: [...rootFiles] };
     const stagingRoot = path.join(await realpath(options.projectRoot), `.foldy-baseline-repair-${randomUUID()}`);
     const stagedRevision = path.join(stagingRoot, 'revision');
     let revisionInstalled = false;
@@ -1036,6 +1039,7 @@ export async function promoteFoldy(options: PromoteFoldyOptions): Promise<Record
       revisionId: request.candidateRevisionId,
       currentRevisionId: request.candidateRevisionId,
       entryFile: request.entryFile,
+      publicationFiles: [...request.rootFiles],
       foldy: true,
     };
     let metadataUpdated = false;
@@ -1146,6 +1150,7 @@ const FOLDY_ENROLLMENT_METADATA_KEYS = [
   'workbookId',
   'revisionId',
   'currentRevisionId',
+  'publicationFiles',
 ] as const;
 
 export function assertGenericFoldyProjectCreationAllowed(metadata: unknown): void {
@@ -1256,9 +1261,20 @@ export async function assertGenericFoldyMetadataPatchAllowed(
     }
     return;
   }
-  const immutableEnvelopeKeys = ['foldy', 'workbookId', 'revisionId', 'currentRevisionId', 'entryFile'] as const;
+  const immutableEnvelopeKeys = ['foldy', 'workbookId', 'revisionId', 'currentRevisionId', 'entryFile', 'publicationFiles'] as const;
   for (const key of immutableEnvelopeKeys) {
-    if (!Object.prototype.hasOwnProperty.call(incomingMetadata, key) || incomingMetadata[key] !== existingMetadata?.[key]) {
+    const incomingHasKey = Object.prototype.hasOwnProperty.call(incomingMetadata, key);
+    const existingHasKey = Object.prototype.hasOwnProperty.call(existingMetadata ?? {}, key);
+    if (key === 'publicationFiles' && !existingHasKey) {
+      if (incomingHasKey) {
+        fail(409, 'FOLDY_PROMOTION_REQUIRED', `Foldy project ${key} metadata is immutable outside POST /api/projects/:id/foldy/promote`);
+      }
+      continue;
+    }
+    const unchanged = key === 'publicationFiles'
+      ? JSON.stringify(incomingMetadata[key]) === JSON.stringify(existingMetadata?.[key])
+      : incomingMetadata[key] === existingMetadata?.[key];
+    if (!incomingHasKey || !unchanged) {
       fail(409, 'FOLDY_PROMOTION_REQUIRED', `Foldy project ${key} metadata is immutable outside POST /api/projects/:id/foldy/promote`);
     }
   }

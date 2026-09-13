@@ -1,5 +1,6 @@
 import type { Express, Request, Response } from 'express';
 import type { FoldyMcpGrant, FoldyMcpGrantStore, FoldyMcpScope } from '../foldy-mcp/grants.js';
+import type { DeploymentInput, McpGrantRevocationInput } from '../foldy-deployments/cynder.js';
 import { createFoldyMcpInstallInfo } from '../foldy-mcp/install-info.js';
 import { FoldyMcpArgumentsError, validateFoldyMcpToolArguments } from '../foldy-mcp/schemas.js';
 
@@ -23,9 +24,69 @@ export interface FoldyMcpRoutesService {
   resolveProject(projectId: string): FoldyProject | null;
   resolveProjectRoot(project: FoldyProject): string;
   publicationStore: PublicationOperations;
-  deploy(projectId: string, input: Record<string, unknown>): Promise<unknown>;
+  deploy(projectId: string, input: Omit<DeploymentInput, 'projectId'>): Promise<unknown>;
+  revocations: FoldyMcpRevocationService;
 }
 export interface RegisterFoldyMcpRoutesDeps { foldyMcp: FoldyMcpRoutesService }
+
+export interface FoldyMcpRevocationService {
+  attempt(grantId: string): Promise<'complete' | 'pending'>;
+  reconcile(): Promise<{ attempted: number; completed: number; pending: number }>;
+}
+
+export function createFoldyMcpRevocationService(options: {
+  grants: FoldyMcpGrantStore;
+  revokeMcpGrant(input: McpGrantRevocationInput): Promise<void>;
+  timeoutMs?: number;
+  maxIntents?: number;
+}): FoldyMcpRevocationService {
+  const timeoutMs = Math.max(1, Math.min(options.timeoutMs ?? 5_000, 30_000));
+  const maxIntents = Math.max(1, Math.min(options.maxIntents ?? 20, 100));
+  const inFlight = new Map<string, Promise<'complete' | 'pending'>>();
+  const attempt = (grantId: string): Promise<'complete' | 'pending'> => {
+    const current = inFlight.get(grantId);
+    if (current) return current;
+    const task = (async (): Promise<'complete' | 'pending'> => {
+      const intent = options.grants.pendingRevocations().find((item) => item.grantId === grantId);
+      if (!intent) return options.grants.get(grantId)?.revocationStatus === 'complete' ? 'complete' : 'pending';
+      let timer: NodeJS.Timeout | undefined;
+      try {
+        await Promise.race([
+          options.revokeMcpGrant({ grantId: intent.grantId, projectId: intent.projectId, tokenSha256: intent.tokenSha256 }),
+          new Promise<never>((_resolve, reject) => {
+            timer = setTimeout(() => reject(Object.assign(new Error('provider revoke timeout'), { code: 'PROVIDER_REVOKE_TIMEOUT' })), timeoutMs);
+            timer.unref?.();
+          }),
+        ]);
+        await options.grants.recordRevocationAttempt(grantId, { status: 'complete' });
+        return 'complete';
+      } catch (error) {
+        const candidate = error as { status?: unknown; code?: unknown };
+        const errorCode = candidate.status === 504 || candidate.code === 'PROVIDER_REVOKE_TIMEOUT'
+          ? 'PROVIDER_REVOKE_TIMEOUT'
+          : 'PROVIDER_REVOKE_FAILED';
+        await options.grants.recordRevocationAttempt(grantId, { status: 'pending', errorCode });
+        return 'pending';
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    })().finally(() => { inFlight.delete(grantId); });
+    inFlight.set(grantId, task);
+    return task;
+  };
+  return {
+    attempt,
+    async reconcile() {
+      const intents = options.grants.pendingRevocations(maxIntents);
+      let completed = 0;
+      for (const intent of intents) {
+        try { if (await attempt(intent.grantId) === 'complete') completed += 1; }
+        catch { /* The durable pending intent remains available for a later bounded retry. */ }
+      }
+      return { attempted: intents.length, completed, pending: options.grants.pendingRevocations().length };
+    },
+  };
+}
 
 class HttpError extends Error { constructor(readonly status: number, readonly code: string, message: string) { super(message); } }
 const isRecord = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
@@ -34,6 +95,7 @@ function text(input: Record<string, unknown>, name: string): string { if (typeof
 function integer(input: Record<string, unknown>, name: string): number { if (!Number.isSafeInteger(input[name]) || (input[name] as number) < 0) throw new HttpError(400, 'FOLDY_MCP_INVALID_REQUEST', `${name} must be a non-negative integer`); return input[name] as number; }
 function bearer(req: Request): string | null { const match = /^Bearer ([^\s]+)$/i.exec(req.get('authorization') ?? ''); return match?.[1] ?? null; }
 function noStore(res: Response): void { res.setHeader('cache-control', 'no-store'); res.setHeader('pragma', 'no-cache'); }
+function mcpActorId(grantId: string): string { return `mcp-${grantId}`; }
 function formalProject(service: FoldyMcpRoutesService, projectId: string): {
   project: FoldyProject;
   entryFile: string;
@@ -81,7 +143,26 @@ export function registerFoldyMcpRoutes(app: Express, ctx: RegisterFoldyMcpRoutes
     noStore(res); res.status(201).json({ ...issued, installInfo: createFoldyMcpInstallInfo({ command: service.command, daemonUrl: service.getDaemonUrl(), grantId: issued.grant.grantId }) });
   }));
   app.get('/api/foldy/mcp/grants', wrap((req, res) => { requireLocal(service, req); noStore(res); res.json({ grants: service.grants.list(typeof req.query.projectId === 'string' ? req.query.projectId : undefined) }); }));
-  app.delete('/api/foldy/mcp/grants/:grantId', wrap(async (req, res) => { requireLocal(service, req); const revoked = await service.grants.revoke(String(req.params.grantId)); if (!revoked) throw new HttpError(404, 'FOLDY_MCP_GRANT_NOT_FOUND', 'grant not found'); noStore(res); res.json({ grant: revoked }); }));
+  app.delete('/api/foldy/mcp/grants/:grantId', wrap(async (req, res) => {
+    requireLocal(service, req);
+    const grantId = String(req.params.grantId);
+    const grant = service.grants.get(grantId);
+    if (!grant) throw new HttpError(404, 'FOLDY_MCP_GRANT_NOT_FOUND', 'grant not found');
+    const revoked = await service.grants.revoke(grantId);
+    if (!revoked) throw new HttpError(404, 'FOLDY_MCP_GRANT_NOT_FOUND', 'grant not found');
+    let status: 'complete' | 'pending' = revoked.revocationStatus === 'complete' ? 'complete' : 'pending';
+    if (status === 'pending') {
+      try { status = await service.revocations.attempt(grantId); }
+      catch { status = 'pending'; }
+    }
+    noStore(res);
+    res.status(status === 'complete' ? 200 : 202).json({ grant: service.grants.get(grantId) });
+  }));
+  app.post('/api/foldy/mcp/revocations/reconcile', wrap(async (req, res) => {
+    requireLocal(service, req);
+    noStore(res);
+    res.json(await service.revocations.reconcile());
+  }));
   app.get('/api/foldy/mcp/grants/:grantId/install', wrap((req, res) => { requireLocal(service, req); const grant = service.grants.get(String(req.params.grantId)); if (!grant) throw new HttpError(404, 'FOLDY_MCP_GRANT_NOT_FOUND', 'grant not found'); noStore(res); res.json(createFoldyMcpInstallInfo({ command: service.command, daemonUrl: service.getDaemonUrl(), grantId: grant.grantId })); }));
 
   app.get('/api/foldy/mcp/session', wrap((req, res) => { const grant = requireGrant(service, req); noStore(res); res.json(grant); }));
@@ -107,15 +188,28 @@ export function registerFoldyMcpRoutes(app: Express, ctx: RegisterFoldyMcpRoutes
         entryFile: enrolled.entryFile,
         publicationFiles: enrolled.publicationFiles,
         expectedLatestRevisionId: input.expectedLatestRevisionId === null ? null : text(input, 'expectedLatestRevisionId'),
-        actorId: `mcp:${grant.grantId}`,
+        actorId: mcpActorId(grant.grantId),
       });
     } },
-    foldy_request_review: { scope: 'reviewer', call: async (grant, input) => service.publicationStore.requestReview({ projectId: grant.projectId, revisionId: text(input, 'revisionId'), expectedLatestRevisionId: text(input, 'expectedLatestRevisionId'), actorId: `mcp:${grant.grantId}` }) },
-    foldy_add_review_comment: { scope: 'reviewer', call: async (grant, input) => service.publicationStore.addReviewComment({ projectId: grant.projectId, revisionId: text(input, 'revisionId'), reviewId: text(input, 'reviewId'), body: text(input, 'body'), expectedReviewVersion: integer(input, 'expectedReviewVersion'), actorId: `mcp:${grant.grantId}` }) },
-    foldy_decide_review: { scope: 'reviewer', call: async (grant, input) => { const decision = input.decision; if (decision !== 'approved' && decision !== 'changes_requested') throw new HttpError(400, 'FOLDY_MCP_INVALID_REQUEST', 'invalid decision'); return service.publicationStore.decideReview({ projectId: grant.projectId, revisionId: text(input, 'revisionId'), reviewId: text(input, 'reviewId'), decision, expectedReviewVersion: integer(input, 'expectedReviewVersion'), actorId: `mcp:${grant.grantId}` }); } },
-    foldy_publish: { scope: 'publisher', call: async (grant, input) => service.publicationStore.publish({ projectId: grant.projectId, revisionId: text(input, 'revisionId'), expectedPublishedGeneration: integer(input, 'expectedPublishedGeneration'), actorId: `mcp:${grant.grantId}` }) },
-    foldy_rollback: { scope: 'publisher', call: async (grant, input) => service.publicationStore.rollback({ projectId: grant.projectId, targetRevisionId: text(input, 'targetRevisionId'), expectedPublishedGeneration: integer(input, 'expectedPublishedGeneration'), actorId: `mcp:${grant.grantId}` }) },
-    foldy_deploy: { scope: 'deployer', call: async (grant, input) => service.deploy(grant.projectId, input) },
+    foldy_request_review: { scope: 'reviewer', call: async (grant, input) => service.publicationStore.requestReview({ projectId: grant.projectId, revisionId: text(input, 'revisionId'), expectedLatestRevisionId: text(input, 'expectedLatestRevisionId'), actorId: mcpActorId(grant.grantId) }) },
+    foldy_add_review_comment: { scope: 'reviewer', call: async (grant, input) => service.publicationStore.addReviewComment({ projectId: grant.projectId, revisionId: text(input, 'revisionId'), reviewId: text(input, 'reviewId'), body: text(input, 'body'), expectedReviewVersion: integer(input, 'expectedReviewVersion'), actorId: mcpActorId(grant.grantId) }) },
+    foldy_decide_review: { scope: 'reviewer', call: async (grant, input) => { const decision = input.decision; if (decision !== 'approved' && decision !== 'changes_requested') throw new HttpError(400, 'FOLDY_MCP_INVALID_REQUEST', 'invalid decision'); return service.publicationStore.decideReview({ projectId: grant.projectId, revisionId: text(input, 'revisionId'), reviewId: text(input, 'reviewId'), decision, expectedReviewVersion: integer(input, 'expectedReviewVersion'), actorId: mcpActorId(grant.grantId) }); } },
+    foldy_publish: { scope: 'publisher', call: async (grant, input) => service.publicationStore.publish({ projectId: grant.projectId, revisionId: text(input, 'revisionId'), expectedPublishedGeneration: integer(input, 'expectedPublishedGeneration'), actorId: mcpActorId(grant.grantId) }) },
+    foldy_rollback: { scope: 'publisher', call: async (grant, input) => service.publicationStore.rollback({ projectId: grant.projectId, targetRevisionId: text(input, 'targetRevisionId'), expectedPublishedGeneration: integer(input, 'expectedPublishedGeneration'), actorId: mcpActorId(grant.grantId) }) },
+    foldy_deploy: { scope: 'deployer', call: async (grant, input) => {
+      const mcpGrant = service.grants.deploymentDescriptor(grant.grantId, grant.projectId);
+      if (!mcpGrant) throw new HttpError(403, 'FOLDY_MCP_SCOPE_DENIED', 'active project-bound deployment grant required');
+      return service.deploy(grant.projectId, {
+        revisionId: text(input, 'revisionId'),
+        environment: text(input, 'environment'),
+        idempotencyKey: text(input, 'idempotencyKey'),
+        expectedActiveProviderRevisionId: input.expectedActiveProviderRevisionId === null
+          ? null
+          : text(input, 'expectedActiveProviderRevisionId'),
+        accessPolicy: { mode: 'public' },
+        mcpGrant,
+      });
+    } },
   };
   app.post('/api/foldy/mcp/operations/:operation', wrap(async (req, res) => {
     const operation = operations[String(req.params.operation)]; if (!operation) throw new HttpError(404, 'FOLDY_MCP_OPERATION_NOT_FOUND', 'operation not found');

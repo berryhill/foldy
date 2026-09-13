@@ -328,7 +328,7 @@ import { registerChatRoutes } from './chat-routes.js';
 import { registerStaticResourceRoutes } from './static-resource-routes.js';
 import { registerRoutineRoutes, routineDbRowToContract } from './routine-routes.js';
 import { registerFoldyPublicationRoutes, type FoldyPublicationRoutesService } from './routes/foldy-publication.js';
-import { registerFoldyMcpRoutes, type FoldyMcpRoutesService } from './routes/foldy-mcp.js';
+import { createFoldyMcpRevocationService, registerFoldyMcpRoutes, type FoldyMcpRoutesService } from './routes/foldy-mcp.js';
 import { registerFoldyCynderRoutes } from './routes/foldy-cynder.js';
 import { FoldyPublicationStore } from './foldy-publications/store.js';
 import { createFoldyMcpGrantStore } from './foldy-mcp/grants.js';
@@ -3704,6 +3704,7 @@ export async function startServer({
           activate: unavailableCynder,
           inspect: unavailableCynder,
           verifyHealth: unavailableCynder,
+          revokeMcpGrant: unavailableCynder,
           rollback: unavailableCynder,
         };
   const foldyCynderDeployments = new FoldyCynderDeploymentService({
@@ -3713,6 +3714,12 @@ export async function startServer({
       foldyPublication.publicationStore.getRevision(projectId, revisionId),
     readRevisionFile: async (projectId, revisionId, file) =>
       (await foldyPublication.publicationStore.resolveRevisionFile(projectId, revisionId, file)).bytes,
+    isRevisionApproved: async (projectId, revisionId) => {
+      const state = await foldyPublication.publicationStore.getState(projectId);
+      return state.reviews.some((review) => review.revisionId === revisionId && review.status === 'approved');
+    },
+    isCurrentMcpGrant: (projectId, descriptor) =>
+      foldyMcpGrants.isCurrentDeploymentDescriptor(projectId, descriptor),
   });
   const isFormalFoldyProject = (projectId: string): boolean => {
     const project = getProject(db, projectId);
@@ -3732,6 +3739,12 @@ export async function startServer({
       isFormalProject: isFormalFoldyProject,
     },
   });
+  const foldyMcpRevocations = createFoldyMcpRevocationService({
+    grants: foldyMcpGrants,
+    revokeMcpGrant: (input) => foldyCynderDeployments.revokeMcpGrant(input),
+    timeoutMs: 5_000,
+    maxIntents: 20,
+  });
   const foldyMcp: FoldyMcpRoutesService = {
     grants: foldyMcpGrants,
     command: OD_BIN,
@@ -3741,19 +3754,12 @@ export async function startServer({
     resolveProjectRoot: (project) =>
       resolveProjectDir(PROJECTS_DIR, project.id, project.metadata),
     publicationStore: foldyPublication.publicationStore,
-    deploy: (projectId, input) => foldyCynderDeployments.deploy({
-      projectId,
-      revisionId: typeof input.revisionId === 'string' ? input.revisionId : '',
-      environment: typeof input.environment === 'string' ? input.environment : '',
-      idempotencyKey: typeof input.idempotencyKey === 'string' ? input.idempotencyKey : '',
-      expectedActiveProviderRevisionId:
-        input.expectedActiveProviderRevisionId === null
-        || typeof input.expectedActiveProviderRevisionId === 'string'
-          ? input.expectedActiveProviderRevisionId
-          : null,
-    }),
+    deploy: (projectId, input) => foldyCynderDeployments.deploy({ projectId, ...input }),
+    revocations: foldyMcpRevocations,
   };
   registerFoldyMcpRoutes(app, { foldyMcp });
+  // Bounded and timed by the service; startup never awaits provider availability.
+  void foldyMcpRevocations.reconcile().catch(() => undefined);
 
   registerProjectRoutes(app, {
     db,

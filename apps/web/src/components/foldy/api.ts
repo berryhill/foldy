@@ -1,12 +1,18 @@
 import type {
   CreateFoldyMcpGrantResponse,
-  CynderDeploymentReceipt,
+  DeployFoldyRevisionRequest,
+  FoldyCynderDeploymentResponse,
+  FoldyCynderStatusResponse,
   FoldyBrowserAccessStatus,
   FoldyMcpGrant,
   FoldyMcpInstallInfo,
   FoldyPublicationProjectState,
   FoldyReviewDecision,
   FoldyRuntimeScope,
+  RecoverFoldyCynderDeploymentRequest,
+  RecoverFoldyCynderDeploymentResponse,
+  RevokeFoldyMcpGrantResponse,
+  RollbackFoldyRevisionRequest,
 } from './types';
 
 export class FoldyApiError extends Error {
@@ -82,7 +88,7 @@ export const foldyApi = {
     });
   },
   revokeGrant(grantId: string) {
-    return request<{ grant: FoldyMcpGrant }>(`/api/foldy/mcp/grants/${encodeURIComponent(grantId)}`, { method: 'DELETE' });
+    return request<RevokeFoldyMcpGrantResponse>(`/api/foldy/mcp/grants/${encodeURIComponent(grantId)}`, { method: 'DELETE' });
   },
   installInfo(grantId: string) {
     return request<FoldyMcpInstallInfo>(`/api/foldy/mcp/grants/${encodeURIComponent(grantId)}/install`);
@@ -102,12 +108,21 @@ export const foldyApi = {
   logout() {
     return request<void>('/api/foldy-access/logout', { method: 'POST' });
   },
-  cynder(projectId: string, revisionId: string, kind: 'deploy' | 'rollback', input: {
-    environment: string;
-    idempotencyKey: string;
-    expectedActiveProviderRevisionId: string | null;
-  }) {
-    return request<CynderDeploymentReceipt>(`${revisionBase(projectId, revisionId)}/cynder/${kind}`, {
+  deploy(projectId: string, revisionId: string, input: DeployFoldyRevisionRequest) {
+    return request<FoldyCynderDeploymentResponse>(`${revisionBase(projectId, revisionId)}/cynder/deploy`, {
+      method: 'POST', body: JSON.stringify(input),
+    });
+  },
+  rollback(projectId: string, revisionId: string, input: RollbackFoldyRevisionRequest) {
+    return request<FoldyCynderDeploymentResponse>(`${revisionBase(projectId, revisionId)}/cynder/rollback`, {
+      method: 'POST', body: JSON.stringify(input),
+    });
+  },
+  status(projectId: string, environment: string) {
+    return request<FoldyCynderStatusResponse>(`${projectBase(projectId)}/cynder/status?environment=${encodeURIComponent(environment)}`);
+  },
+  recover(projectId: string, input: RecoverFoldyCynderDeploymentRequest) {
+    return request<RecoverFoldyCynderDeploymentResponse>(`${projectBase(projectId)}/cynder/recover`, {
       method: 'POST', body: JSON.stringify(input),
     });
   },

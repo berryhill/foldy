@@ -1,19 +1,39 @@
 import type {
   CreateFoldyMcpGrantResponse,
+  DeployFoldyRevisionRequest,
+  FoldyCynderDeploymentResponse,
+  FoldyCynderStatusResponse,
+  FoldyDeploymentAccessMode,
+  FoldyDeploymentBinding,
   FoldyMcpGrant,
   FoldyMcpInstallInfo,
   FoldyPublicationProjectState,
+  FoldyRemoteMcpInstallInfo,
   FoldyReviewDecision,
   FoldyRuntimeScope,
+  RecoverFoldyCynderDeploymentRequest,
+  RecoverFoldyCynderDeploymentResponse,
+  RevokeFoldyMcpGrantResponse,
+  RollbackFoldyRevisionRequest,
 } from '@open-design/contracts';
 
 export type {
   CreateFoldyMcpGrantResponse,
+  DeployFoldyRevisionRequest,
+  FoldyCynderDeploymentResponse,
+  FoldyCynderStatusResponse,
+  FoldyDeploymentAccessMode,
+  FoldyDeploymentBinding,
   FoldyMcpGrant,
   FoldyMcpInstallInfo,
   FoldyPublicationProjectState,
+  FoldyRemoteMcpInstallInfo,
   FoldyReviewDecision,
   FoldyRuntimeScope,
+  RecoverFoldyCynderDeploymentRequest,
+  RecoverFoldyCynderDeploymentResponse,
+  RevokeFoldyMcpGrantResponse,
+  RollbackFoldyRevisionRequest,
 };
 
 export interface FoldyBrowserAccessStatus {
@@ -21,32 +41,5 @@ export interface FoldyBrowserAccessStatus {
   authenticated: boolean;
 }
 
-export interface CynderDeploymentBinding {
-  providerDeploymentId: string;
-  providerRevisionId: string;
-  projectId: string;
-  revisionId: string;
-  bundleSha256: string;
-  environment: string;
-  url: string;
-}
-
-export interface CynderDeploymentReceipt {
-  schemaVersion: 1;
-  receiptId: string;
-  kind: 'deploy' | 'rollback';
-  status: 'staged' | 'active' | 'rolled_back' | 'failed' | 'rollback_failed';
-  projectId: string;
-  revisionId: string;
-  bundleSha256: string;
-  environment: string;
-  idempotencyKey: string;
-  expectedActiveProviderRevisionId: string | null;
-  priorActive: CynderDeploymentBinding | null;
-  binding: CynderDeploymentBinding | null;
-  health: { checks: { name: string; ok: boolean; status?: number }[] } | null;
-  createdAt: string;
-  completedAt: string | null;
-  errorCode?: string;
-  rollbackError?: string;
-}
+export type CynderDeploymentBinding = FoldyDeploymentBinding;
+export type CynderDeploymentReceipt = FoldyCynderDeploymentResponse;

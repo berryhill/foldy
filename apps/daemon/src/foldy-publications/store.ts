@@ -70,6 +70,7 @@ interface FoldyPublicationStoreTestHooks {
     operation: 'mkdir' | 'lock-acquire' | 'lock-recover' | 'lock-release' | 'receipt-temp-cleanup',
     target: string,
   ) => void | Promise<void>;
+  afterPublishedEntrySelected?: (projectId: string, revisionId: string, entryFile: string) => void | Promise<void>;
 }
 
 export interface SaveFoldyRevisionInput {
@@ -78,7 +79,7 @@ export interface SaveFoldyRevisionInput {
   entryFile: string;
   expectedLatestRevisionId: string | null;
   actorId: string;
-  /** Exact public files. Omission intentionally includes only the enrolled entry. */
+  /** Publication roots. Local relative dependencies are discovered recursively at snapshot time. */
   publicationFiles?: readonly string[];
 }
 
@@ -187,6 +188,48 @@ function logicalPath(value: string): string {
     fail(400, 'FOLDY_INVALID_PATH', 'path must be a normalized project-relative POSIX path');
   }
   return value;
+}
+
+function localDependencyPath(reference: string, sourcePath: string): string | null {
+  const trimmed = reference.trim();
+  if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith('//') || trimmed.includes('\\')
+    || /^[A-Za-z][A-Za-z0-9+.-]*:/.test(trimmed)) return null;
+  const withoutQuery = trimmed.split(/[?#]/, 1)[0]!;
+  if (!withoutQuery || path.posix.isAbsolute(withoutQuery)) return null;
+  const resolved = path.posix.normalize(path.posix.join(path.posix.dirname(sourcePath), withoutQuery));
+  if (resolved === '.' || resolved === '..' || resolved.startsWith('../') || path.posix.isAbsolute(resolved)) return null;
+  return isLogicalPath(resolved) ? resolved : null;
+}
+
+function dependencyReferences(filePath: string, bytes: Buffer): string[] {
+  const extension = path.posix.extname(filePath).toLowerCase();
+  if (!['.htm', '.html', '.xht', '.xhtml', '.css', '.js', '.mjs', '.cjs', '.jsx'].includes(extension)) return [];
+  const source = bytes.toString('utf8');
+  const references: string[] = [];
+  const collect = (pattern: RegExp): void => {
+    for (const match of source.matchAll(pattern)) if (match[1]) references.push(match[1]);
+  };
+  if (['.htm', '.html', '.xht', '.xhtml'].includes(extension)) {
+    collect(/\b(?:src|href)\s*=\s*["']([^"']+)["']/gi);
+    for (const match of source.matchAll(/\bsrcset\s*=\s*["']([^"']+)["']/gi)) {
+      for (const candidate of match[1]!.split(/,\s+/)) {
+        const value = candidate.trim().split(/\s+/, 1)[0];
+        if (value) references.push(value);
+      }
+    }
+  }
+  if (extension === '.css') {
+    collect(/\burl\(\s*["']?([^"')\s]+)["']?\s*\)/gi);
+    collect(/@import\s+["']([^"']+)["']/gi);
+  }
+  if (['.js', '.mjs', '.cjs', '.jsx'].includes(extension)) {
+    collect(/\b(?:import|export)\s+(?:[^;]*?\s+from\s*)?["']([^"']+)["']/g);
+    collect(/\bimport\s*\(\s*["']([^"']+)["']\s*\)/g);
+  }
+  return [...new Set(references
+    .map((reference) => localDependencyPath(reference, filePath))
+    .filter((reference): reference is string => reference !== null))]
+    .sort((left, right) => left.localeCompare(right));
 }
 
 function iso(now: () => Date): string {
@@ -665,7 +708,7 @@ async function snapshotFiles(
   testHooks?: FoldyPublicationStoreTestHooks,
 ): Promise<Array<FoldyRevisionFile & { bytes: Buffer }>> {
   const included = new Set<string>();
-  for (const candidate of requestedFiles) {
+  const include = (candidate: string): void => {
     if (typeof candidate !== 'string' || !isLogicalPath(candidate)) {
       fail(422, 'FOLDY_PUBLICATION_FILE_INVALID', 'publication file declarations must be normalized relative file paths');
     }
@@ -678,7 +721,9 @@ async function snapshotFiles(
       fail(422, 'FOLDY_PUBLICATION_FILE_UNSAFE', 'publication file declaration targets private or build-only content');
     }
     included.add(candidate);
-  }
+    if (included.size > limits.maxFiles) fail(422, 'FOLDY_SNAPSHOT_FILE_LIMIT', 'project snapshot exceeds the maximum file count');
+  };
+  for (const candidate of requestedFiles) include(candidate);
   if (included.size === 0) fail(422, 'FOLDY_PUBLICATION_FILE_INVALID', 'publication must include at least the enrolled entry');
   const rootStat = await lstat(projectRoot).catch(() => null);
   if (!rootStat?.isDirectory() || rootStat.isSymbolicLink()) fail(422, 'FOLDY_PROJECT_ROOT_INVALID', 'project root must be a regular directory');
@@ -702,6 +747,7 @@ async function snapshotFiles(
     handle: rootHandle,
   }];
   const files: Array<FoldyRevisionFile & { bytes: Buffer }> = [];
+  const capturedPaths = new Set<string>();
   let totalBytes = 0;
 
   const assertProjectFence = async (): Promise<void> => {
@@ -765,7 +811,7 @@ async function snapshotFiles(
           await childHandle.close();
         }
       } else if (stat.isFile()) {
-        if (!included.has(relative)) continue;
+        if (!included.has(relative) || capturedPaths.has(relative)) continue;
         if (files.length >= limits.maxFiles) fail(422, 'FOLDY_SNAPSHOT_FILE_LIMIT', 'project snapshot exceeds the maximum file count');
         if (stat.size > limits.maxFileBytes) fail(422, 'FOLDY_SNAPSHOT_FILE_SIZE_LIMIT', 'project snapshot contains a file larger than the configured maximum');
         if (!Number.isSafeInteger(stat.size) || totalBytes + stat.size > limits.maxTotalBytes) {
@@ -794,17 +840,27 @@ async function snapshotFiles(
         if (totalBytes + bytes.byteLength > limits.maxTotalBytes) fail(422, 'FOLDY_SNAPSHOT_TOTAL_SIZE_LIMIT', 'project snapshot exceeds the maximum total byte count');
         totalBytes += bytes.byteLength;
         files.push({ path: logicalPath(relative), sha256: sha256(bytes), size: bytes.byteLength, bytes });
+        capturedPaths.add(relative);
       }
     }
   };
 
   try {
-    await walk(directoryFence[0]!, '', 0);
-    await assertProjectFence();
-    if (files.length !== included.size) {
-      fail(422, 'FOLDY_PUBLICATION_FILE_NOT_FOUND', 'a declared publication file is missing or is not a regular file');
+    let parsedFiles = 0;
+    while (true) {
+      await walk(directoryFence[0]!, '', 0);
+      const newlyCaptured = files.slice(parsedFiles);
+      parsedFiles = files.length;
+      for (const file of newlyCaptured) {
+        for (const dependency of dependencyReferences(file.path, file.bytes)) include(dependency);
+      }
+      if (files.length === included.size) break;
+      if (newlyCaptured.length === 0) {
+        fail(422, 'FOLDY_PUBLICATION_FILE_NOT_FOUND', 'a declared or referenced publication file is missing or is not a regular file');
+      }
     }
-    return files;
+    await assertProjectFence();
+    return files.sort((left, right) => left.path.localeCompare(right.path));
   } finally {
     await rootHandle.close();
   }
@@ -1440,6 +1496,17 @@ export class FoldyPublicationStore {
       const state = await this.readState(projectId);
       if (state.publishedRevisionId === null) fail(404, 'FOLDY_NOT_PUBLISHED', 'project has no published revision');
       return this.resolveRevisionFileUnlocked(projectId, state.publishedRevisionId, safePath, state);
+    });
+  }
+
+  async resolvePublishedEntry(projectId: string): Promise<FoldyResolvedFile> {
+    validateId(projectId, 'project');
+    return this.withProjectLock(projectId, async () => {
+      const state = await this.readState(projectId);
+      if (state.publishedRevisionId === null) fail(404, 'FOLDY_NOT_PUBLISHED', 'project has no published revision');
+      const revision = await this.requireRevision(projectId, state.publishedRevisionId, state);
+      await this.testHooks?.afterPublishedEntrySelected?.(projectId, revision.revisionId, revision.entryFile);
+      return this.resolveRevisionFileUnlocked(projectId, revision.revisionId, revision.entryFile, state);
     });
   }
 }

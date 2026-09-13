@@ -1,3 +1,4 @@
+import path from 'node:path';
 import type { Request, Express } from 'express';
 
 import {
@@ -20,6 +21,7 @@ export interface FoldyPublicationRoutesService {
     | 'decideReview'
     | 'publish'
     | 'rollback'
+    | 'resolvePublishedEntry'
     | 'resolvePublishedFile'>;
   resolveProject(projectId: string): FoldyProject | null;
   resolveProjectRoot(project: FoldyProject): string;
@@ -31,6 +33,25 @@ export interface RegisterFoldyPublicationRoutesDeps {
 }
 
 type JsonRecord = Record<string, unknown>;
+
+const HOSTILE_DOCUMENT_CSP = [
+  'sandbox allow-scripts',
+  "default-src 'none'",
+  "base-uri 'none'",
+  "connect-src 'none'",
+  "form-action 'none'",
+  "object-src 'none'",
+  "script-src 'self' 'unsafe-inline'",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data: blob:",
+  "font-src 'self' data:",
+  "media-src 'self' blob:",
+].join('; ');
+const ACTIVE_DOCUMENT_EXTENSIONS = new Set(['.htm', '.html', '.xht', '.xhtml', '.xml', '.svg']);
+
+function isBrowserActiveDocument(filePath: string): boolean {
+  return ACTIVE_DOCUMENT_EXTENSIONS.has(path.posix.extname(filePath).toLowerCase());
+}
 
 class RouteInputError extends Error {
   constructor(
@@ -145,6 +166,13 @@ export function registerFoldyPublicationRoutes(
   ctx: RegisterFoldyPublicationRoutesDeps,
 ): void {
   const service = ctx.foldyPublication;
+  // This middleware must run before Express decodes route parameters so even
+  // malformed /p URLs rejected by the router retain publication protections.
+  app.use('/p', (_req, res, next) => {
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    next();
+  });
   app.get('/api/projects/:projectId/publication', route(async (req, res) => {
     formalFoldyProject(service, param(req, 'projectId'));
     res.json(await service.publicationStore.getState(param(req, 'projectId')));
@@ -240,17 +268,18 @@ export function registerFoldyPublicationRoutes(
 
   // OpenDesign 0.7 is on Express 4/path-to-regexp 0.x. Its wildcard capture is
   // exposed as params[0]; the Express 5 `*path` syntax does not match here.
-  app.get('/p/:projectId/*', route(async (req, res) => {
-    formalFoldyProject(service, param(req, 'projectId'));
-    const requestedPath = req.params[0] ?? '';
-    const file = await service.publicationStore.resolvePublishedFile(param(req, 'projectId'), requestedPath);
-    const etag = `"sha256-${file.sha256}"`;
-    res.setHeader('ETag', etag);
-    res.setHeader('Cache-Control', 'public, no-cache, must-revalidate');
-    if (req.headers['if-none-match']?.split(',').map((value) => value.trim()).includes(etag)) {
-      res.status(304).end();
-      return;
+  app.get(['/p/:projectId', '/p/:projectId/', '/p/:projectId/*'], route(async (req, res) => {
+    const projectId = param(req, 'projectId');
+    formalFoldyProject(service, projectId);
+    const requestedPath = req.params[0];
+    const file = requestedPath
+      ? await service.publicationStore.resolvePublishedFile(projectId, requestedPath)
+      : await service.publicationStore.resolvePublishedEntry(projectId);
+    res.type(file.path);
+    if (isBrowserActiveDocument(file.path)) {
+      res.setHeader('Content-Security-Policy', HOSTILE_DOCUMENT_CSP);
+      res.setHeader('Referrer-Policy', 'no-referrer');
     }
-    res.type(file.path).send(file.bytes);
+    res.status(200).end(file.bytes);
   }));
 }
