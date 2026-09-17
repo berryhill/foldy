@@ -1279,3 +1279,114 @@ export async function assertGenericFoldyMetadataPatchAllowed(
     }
   }
 }
+
+// Imported source controls are evidence only. This separate transition never
+// relaxes legacy enrollment or promotion's signed-receipt requirements.
+async function inspectFoldyImport(options: Omit<EnrollLegacyFoldyBaselineOptions, 'request' | 'compareAndSetProjectMetadata'>) {
+  requireId(options.projectId, 'projectId');
+  const metadata = await options.readProjectMetadata();
+  if (!metadata) fail(404, 'FOLDY_PROJECT_NOT_FOUND', 'project not found');
+  if (metadata.foldy === true || currentRevision(metadata) !== null) {
+    fail(409, 'FOLDY_IMPORT_ALREADY_ENROLLED', 'adoption requires an unenrolled null-head project');
+  }
+  if (metadata.kind !== 'prototype' || metadata.importedFrom !== 'folder'
+      || typeof metadata.baseDir !== 'string' || metadata.entryFile !== 'index.html') {
+    fail(422, 'FOLDY_IMPORT_REQUIRED', 'adoption requires an imported folder with index.html');
+  }
+  if ((await lstat(options.projectRoot)).isSymbolicLink() || (await lstat(metadata.baseDir)).isSymbolicLink()) {
+    fail(422, 'FOLDY_PATH_ESCAPE', 'import root must not be a symbolic link');
+  }
+  if ((await realpath(metadata.baseDir)) !== (await realpath(options.projectRoot))) {
+    fail(422, 'FOLDY_PATH_ESCAPE', 'import root does not match project');
+  }
+  const files = new Map<string, Buffer>();
+  for (const name of ['index.html', 'workbook.json']) files.set(name, await regularFileBytes(options.projectRoot, name));
+  const sidecar = await assertContainedPath(options.projectRoot, 'index.html.artifact.json');
+  if (await lstat(sidecar).catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return null; throw error; })) {
+    files.set('index.html.artifact.json', await regularFileBytes(options.projectRoot, 'index.html.artifact.json'));
+  }
+  // Use publication's descriptor-fenced collector so confirmation, baseline and
+  // later publication agree on every referenced local asset, not just root HTML.
+  const { snapshotPublicationFiles } = await import('./foldy-publications/store.js');
+  const closure = await snapshotPublicationFiles(options.projectRoot, [...files.keys()]);
+  files.clear();
+  for (const file of closure) files.set(file.path, file.bytes);
+  let workbook: Record<string, unknown>;
+  try { workbook = JSON.parse(files.get('workbook.json')!.toString('utf8')); }
+  catch { fail(422, 'FOLDY_IMPORT_INVALID', 'imported workbook is not JSON'); }
+  if (!isPlainObject(workbook) || typeof workbook.workbookId !== 'string' || !ID.test(workbook.workbookId)
+      || !Array.isArray(workbook.revisions) || workbook.revisions.some((r) => !isPlainObject(r) || typeof r.revisionId !== 'string' || !ID.test(r.revisionId))) {
+    fail(422, 'FOLDY_IMPORT_INVALID', 'imported workbook identity or revisions are invalid');
+  }
+  const revisionIds = (workbook.revisions as Array<Record<string, unknown>>).map((revision) => revision.revisionId);
+  if (new Set(revisionIds).size !== revisionIds.length) fail(422, 'FOLDY_IMPORT_INVALID', 'imported revision ids must be unique');
+  const rootFiles = [...files].map(([name, bytes]) => ({ path: name, sha256: sha256(bytes) })).sort((a, b) => a.path.localeCompare(b.path));
+  const preflight: import('@open-design/contracts').FoldyImportPreflight = {
+    version: 'foldy-import-adoption.v1', projectId: options.projectId, expectedCurrentRevisionId: null,
+    metadataSha256: sha256(canonicalJson(metadata)), importedRootSha256: sha256(canonicalJson(rootFiles)),
+    rootFiles, snapshotKind: 'imported-html-snapshot',
+  };
+  return { metadata, workbook, files, preflight };
+}
+
+export async function preflightFoldyImport(options: Omit<EnrollLegacyFoldyBaselineOptions, 'request' | 'compareAndSetProjectMetadata'>) {
+  return withFoldyProjectLock(options.projectId, async () => (await inspectFoldyImport(options)).preflight);
+}
+
+export async function adoptFoldyImport(options: EnrollLegacyFoldyBaselineOptions) {
+  return withFoldyProjectLock(options.projectId, async () => {
+    const request = options.request;
+    if (!isPlainObject(request)) fail(400, 'FOLDY_INVALID_REQUEST', 'adoption requires exact-content confirmation');
+    exactKeys(request, ['version', 'projectId', 'expectedCurrentRevisionId', 'metadataSha256', 'importedRootSha256', 'rootFiles', 'snapshotKind', 'confirmExactContent'], 'import adoption');
+    if (request.confirmExactContent !== true) fail(400, 'FOLDY_INVALID_REQUEST', 'explicit exact-content confirmation required');
+    const { confirmExactContent: _confirmation, ...confirmed } = request;
+    const inspected = await inspectFoldyImport(options);
+    if (canonicalJson(confirmed) !== canonicalJson(inspected.preflight)) fail(409, 'FOLDY_IMPORT_STALE', 'import content or metadata changed; preflight again');
+    const { metadata, workbook, files, preflight } = inspected;
+    const revisionId = `import-${randomUUID()}`;
+    if ((workbook.revisions as Array<Record<string, unknown>>).some((r) => r.revisionId === revisionId)) fail(409, 'FOLDY_IMPORT_COLLISION', 'revision identity collision');
+    const controlPath = `.foldy-import-control-${revisionId}.json`;
+    const controlBytes = Buffer.from(JSON.stringify({ ...preflight, revisionId, workbookId: workbook.workbookId, authority: 'target-local-baseline-only' }));
+    const protectedSurfaces = [{ path: controlPath, sha256: sha256(controlBytes) }];
+    // Only source history is copied. The new revision has no review/approval fields.
+    const revision = { revisionId, state: 'FROZEN', bundleSha256: null as string | null, protectedSurfaces, snapshotKind: preflight.snapshotKind };
+    const baseline = { workbookId: workbook.workbookId, currentRevisionId: revisionId, revisions: [...structuredClone(workbook.revisions as unknown[]), revision] };
+    const baselineFiles = [...files].filter(([name]) => name !== 'workbook.json').map(([name, bytes]) => ({ path: name, bytes }));
+    baselineFiles.push({ path: 'workbook.json', bytes: Buffer.from(JSON.stringify(baseline)) });
+    revision.bundleSha256 = hashBundle(baselineFiles);
+    baselineFiles[baselineFiles.length - 1]!.bytes = Buffer.from(JSON.stringify(baseline));
+    const revisionPath = `revisions/${revisionId}`;
+    const target = await assertContainedPath(options.projectRoot, revisionPath);
+    const controlTarget = await assertContainedPath(options.projectRoot, controlPath);
+    let installed = false;
+    let controlInstalled = false;
+    try {
+      await mkdir(await assertContainedPath(options.projectRoot, 'revisions'), { recursive: true });
+      // Exclusive mkdir and wx writes: never rename over even an empty existing directory.
+      await mkdir(target); installed = true;
+      for (const file of baselineFiles) {
+        const destination = await assertContainedPath(options.projectRoot, `${revisionPath}/${file.path}`);
+        await mkdir(path.dirname(destination), { recursive: true });
+        await writeFile(destination, file.bytes, { flag: 'wx' });
+      }
+      await writeFile(controlTarget, controlBytes, { flag: 'wx' }); controlInstalled = true;
+      if (hashBundle(await collectRegularFiles(target)) !== revision.bundleSha256) fail(500, 'FOLDY_STAGE_PARITY_FAILED', 'baseline parity failed');
+      const rechecked = await inspectFoldyImport(options);
+      if (canonicalJson(rechecked.preflight) !== canonicalJson(preflight)) fail(409, 'FOLDY_IMPORT_STALE', 'import changed during adoption');
+      const replacement: FoldyProjectMetadata = { ...metadata, foldy: true, workbookId: workbook.workbookId as string,
+        revisionId, currentRevisionId: revisionId, publicationFiles: [...files.keys()], foldyImport: { revisionId, controlPath, importedRootSha256: preflight.importedRootSha256, snapshotKind: preflight.snapshotKind } };
+      if (!await options.compareAndSetProjectMetadata(metadata, replacement)) fail(409, 'FOLDY_METADATA_CAS_FAILED', 'metadata changed during adoption');
+      // No fallible operation after the final metadata CAS. Publication/review stores stay empty.
+      return { ok: true, projectId: options.projectId, currentRevisionId: revisionId, importedRootSha256: preflight.importedRootSha256, controlPath, baselineBundleSha256: revision.bundleSha256 };
+    } catch (error) {
+      const cleanup = await Promise.allSettled([
+        ...(controlInstalled ? [rm(controlTarget)] : []),
+        ...(installed ? [rm(target, { recursive: true })] : []),
+      ]);
+      if (cleanup.some((result) => result.status === 'rejected')) {
+        fail(500, 'FOLDY_IMPORT_ROLLBACK_FAILED', `adoption failed (${error instanceof FoldyPromotionError ? error.code : 'FOLDY_IMPORT_ADOPTION_FAILED'}); cleanup incomplete; preserve remaining baseline/control for recovery`);
+      }
+      throw error;
+    }
+  });
+}

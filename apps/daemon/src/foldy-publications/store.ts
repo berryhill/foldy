@@ -701,6 +701,11 @@ function assertState(value: unknown, projectId: string): asserts value is Mutabl
   }
 }
 
+/** Capture the same bounded dependency closure used by publication, without storing or approving it. */
+export function snapshotPublicationFiles(projectRoot: string, requestedFiles: readonly string[]) {
+  return snapshotFiles(projectRoot, requestedFiles, DEFAULT_SNAPSHOT_LIMITS);
+}
+
 async function snapshotFiles(
   projectRoot: string,
   requestedFiles: readonly string[],

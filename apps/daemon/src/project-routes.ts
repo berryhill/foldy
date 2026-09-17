@@ -11,6 +11,8 @@ import {
   assertGenericFoldyMetadataPatchAllowed,
   assertGenericFoldyProjectCreationAllowed,
   enrollLegacyFoldyBaseline,
+  preflightFoldyImport,
+  adoptFoldyImport,
   FoldyPromotionError,
   promoteFoldy,
   repairFoldyNoProtectedAncestor,
@@ -413,6 +415,36 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
         return sendApiError(res, err.status, err.code, err.message, { details: err.details });
       }
       sendApiError(res, 400, 'BAD_REQUEST', String(err));
+    }
+  });
+
+  app.get('/api/projects/:id/foldy/import-adoption', async (req, res) => {
+    try {
+      const project = getProject(db, req.params.id);
+      if (!project) return sendApiError(res, 404, 'PROJECT_NOT_FOUND', 'not found');
+      res.json(await preflightFoldyImport({ projectId: project.id,
+        projectRoot: resolveProjectDir(PROJECTS_DIR, project.id, project.metadata),
+        readProjectMetadata: () => getProject(db, project.id)?.metadata ?? null }));
+    } catch (err) {
+      if (err instanceof FoldyPromotionError) return sendApiError(res, err.status, err.code, err.message);
+      sendApiError(res, 500, 'FOLDY_IMPORT_PREFLIGHT_FAILED', 'import preflight failed');
+    }
+  });
+
+  app.post('/api/projects/:id/foldy/import-adoption', async (req, res) => {
+    try {
+      const project = getProject(db, req.params.id);
+      if (!project) return sendApiError(res, 404, 'PROJECT_NOT_FOUND', 'not found');
+      res.json(await adoptFoldyImport({ projectId: project.id, request: req.body,
+        projectRoot: resolveProjectDir(PROJECTS_DIR, project.id, project.metadata),
+        readProjectMetadata: () => getProject(db, project.id)?.metadata ?? null,
+        compareAndSetProjectMetadata: (expected, replacement) => db.prepare(
+          'UPDATE projects SET metadata_json = ?, updated_at = ? WHERE id = ? AND metadata_json = ?',
+        ).run(JSON.stringify(replacement), Date.now(), project.id, JSON.stringify(expected)).changes === 1,
+      }));
+    } catch (err) {
+      if (err instanceof FoldyPromotionError) return sendApiError(res, err.status, err.code, err.message);
+      sendApiError(res, 500, 'FOLDY_IMPORT_ADOPTION_FAILED', 'import adoption failed');
     }
   });
 

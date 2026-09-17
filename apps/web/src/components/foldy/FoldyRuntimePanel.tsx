@@ -31,8 +31,36 @@ export interface FoldyRuntimePanelProps {
 }
 
 export function FoldyRuntimeMount({ projectId, metadata }: { projectId: string; metadata: unknown }) {
-  if (!isFoldyProjectMetadata(metadata)) return null;
-  return <FoldyRuntimePanel projectId={projectId} entryFile={metadata.entryFile} />;
+  const [refetched, setRefetched] = useState<{ projectId: string; metadata: unknown } | null>(null);
+  const effective = refetched?.projectId === projectId ? refetched.metadata : metadata;
+  if (isFoldyProjectMetadata(effective)) return <FoldyRuntimePanel projectId={projectId} entryFile={effective.entryFile} />;
+  if (!effective || typeof effective !== 'object' || Array.isArray(effective)
+      || (effective as Record<string, unknown>).importedFrom !== 'folder') return null;
+  return <FoldyImportAdoption key={projectId} projectId={projectId} onAdopted={(next) => setRefetched({ projectId, metadata: next })} />;
+}
+
+function FoldyImportAdoption({ projectId, onAdopted }: { projectId: string; onAdopted: (metadata: unknown) => void }) {
+  const [preflight, setPreflight] = useState<import('@open-design/contracts').FoldyImportPreflight | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    void foldyApi.importPreflight(projectId).then((result) => { if (!cancelled) setPreflight(result); }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [projectId]);
+  if (!preflight) return null;
+  return <section className="foldy-card" aria-label="Adopt imported Foldy">
+    <p>Imported HTML snapshot. Adopt these exact bytes to enable local Foldy controls. Source history stays unchanged; no approval or publication is imported.</p>
+    <code>{preflight.importedRootSha256}</code>
+    <button type="button" className="foldy-button" disabled={busy} onClick={() => {
+      setBusy(true); setError(null);
+      void foldyApi.adoptImport(projectId, { ...preflight, confirmExactContent: true })
+        .then(() => foldyApi.projectMetadata(projectId)).then((result) => onAdopted(result.project.metadata))
+        .catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)))
+        .finally(() => setBusy(false));
+    }}>Adopt exact imported content</button>
+    {error ? <p role="alert">{error}</p> : null}
+  </section>;
 }
 
 export function isFoldyProjectMetadata(metadata: unknown): metadata is { foldy: true; entryFile: string } {
@@ -96,7 +124,7 @@ function PublicationPanel({ projectId, entryFile, state, refresh, actions }: {
       <Detail label="Working copy"><code>{entryFile}</code></Detail>
       <Detail label="Saved revision"><code>{latest ?? 'None'}</code></Detail>
       <Detail label="Current revision"><code>{state.publishedRevisionId ?? 'None'}</code></Detail>
-      <Detail label="Status">{latest === state.publishedRevisionId ? 'Published' : 'Changes'}</Detail>
+      <Detail label="Status">{!state.publishedRevisionId ? 'Not published' : latest === state.publishedRevisionId ? 'Published' : 'Changes'}</Detail>
     </dl>
     <Context revision={latest} cas={`Expected publication generation: ${state.publishedGeneration}`} />
     <div className="foldy-actions">

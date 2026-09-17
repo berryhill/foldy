@@ -48,6 +48,15 @@ const revisionBase = (projectId: string, revisionId: string) =>
   `${projectBase(projectId)}/revisions/${encodeURIComponent(revisionId)}`;
 
 export const foldyApi = {
+  importPreflight(projectId: string) {
+    return request<import('@open-design/contracts').FoldyImportPreflight>(`${projectBase(projectId)}/foldy/import-adoption`);
+  },
+  adoptImport(projectId: string, input: import('@open-design/contracts').AdoptFoldyImportRequest) {
+    return request(`${projectBase(projectId)}/foldy/import-adoption`, { method: 'POST', body: JSON.stringify(input) });
+  },
+  projectMetadata(projectId: string) {
+    return request<{ project: { metadata: unknown } }>(projectBase(projectId));
+  },
   publication(projectId: string) {
     return request<FoldyPublicationProjectState>(`${projectBase(projectId)}/publication`);
   },

@@ -81,6 +81,40 @@ afterEach(() => {
 });
 
 describe('FoldyRuntimePanel', () => {
+  it('shows a newly adopted project as unpublished with approval actions gated', async () => {
+    const bootstrap = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation((input, init) => String(input).endsWith('/publication')
+      ? response({ ...publication, latestRevisionId: null, publishedRevisionId: null, publishedGeneration: 0, revisions: [], reviews: [] })
+      : bootstrap(input, init));
+    render(<FoldyRuntimePanel projectId="project-1" entryFile="index.html" defaultOpen />);
+    expect(await screen.findByText('Not published')).not.toBeNull();
+    expect((screen.getByRole('button', { name: 'Save revision' }) as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole('button', { name: 'Publish update' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Request review' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('requires a successful imported-workbook preflight and explicit adoption, then refetches metadata', async () => {
+    const preflight = { version: 'foldy-import-adoption.v1', projectId: 'project-1', expectedCurrentRevisionId: null, importedRootSha256: 'a'.repeat(64), metadataSha256: 'b'.repeat(64), rootFiles: [], snapshotKind: 'imported-html-snapshot' };
+    vi.mocked(fetch).mockImplementation((input, init) => {
+      if (String(input).endsWith('/import-adoption')) return response(init?.method === 'POST' ? { ok: true } : preflight);
+      if (String(input) === '/api/projects/project-1') return response({ project: { metadata: { foldy: true, entryFile: 'index.html' } } });
+      throw new Error('unexpected request');
+    });
+    render(<FoldyRuntimeMount projectId="project-1" metadata={{ importedFrom: 'folder', entryFile: 'index.html' }} />);
+    const button = await screen.findByRole('button', { name: 'Adopt exact imported content' });
+    expect(vi.mocked(fetch).mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
+    fireEvent.click(button);
+    await screen.findByRole('button', { name: 'Foldy runtime' });
+    expect(fetch).toHaveBeenCalledWith('/api/projects/project-1/foldy/import-adoption', expect.objectContaining({ method: 'POST', body: JSON.stringify({ ...preflight, confirmExactContent: true }) }));
+    expect(fetch).toHaveBeenCalledWith('/api/projects/project-1', expect.anything());
+  });
+
+  it('does not offer adoption for folders without a valid workbook', async () => {
+    vi.mocked(fetch).mockImplementation(() => response({ error: { message: 'missing workbook' } }, 422));
+    render(<FoldyRuntimeMount projectId="project-1" metadata={{ importedFrom: 'folder' }} />);
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+    expect(screen.queryByRole('button', { name: 'Adopt exact imported content' })).toBeNull();
+  });
   it('serializes deployment review identity without plaintext password material', () => {
     const serialized = createDeploymentReviewKey({
       revision: 'rev-2', environment: 'production', expected: null,

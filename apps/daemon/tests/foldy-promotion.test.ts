@@ -6,7 +6,8 @@ import {
   type KeyObject,
 } from 'node:crypto';
 import type http from 'node:http';
-import { mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import express from 'express';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
@@ -19,6 +20,7 @@ import {
   hashBundle,
   hashProtectedSurfaceContract,
   enrollLegacyFoldyBaseline,
+  preflightFoldyImport,
   parseFoldyLegacyBaselineEnrollmentRequest,
   parseFoldyNoProtectedAncestorRepairRequest,
   promoteFoldy,
@@ -357,6 +359,7 @@ async function invokeProjectCreateRoute(metadata: unknown): Promise<{
 }
 
 async function invokeLegacyEnrollmentRoute(input: {
+  route?: string;
   root: string;
   metadata: FoldyProjectMetadata;
   body: unknown;
@@ -370,7 +373,7 @@ async function invokeLegacyEnrollmentRoute(input: {
   const app: any = {};
   for (const method of ['get', 'post', 'patch', 'delete', 'put', 'options']) {
     app[method] = (route: string, ...handlers: Array<(...args: any[]) => unknown>) => {
-      if (method === 'post' && route === '/api/projects/:id/foldy/enroll-legacy-baseline') {
+      if (method === 'post' && route === (input.route ?? '/api/projects/:id/foldy/enroll-legacy-baseline')) {
         handler = handlers.at(-1) as typeof handler;
       }
       return app;
@@ -434,6 +437,20 @@ async function invokeLegacyEnrollmentRoute(input: {
   await handler({ params: { id: projectId }, body: input.body }, res);
   return { ...response, metadata: project.metadata };
 }
+
+it('adopts an imported frozen workbook through the explicit project route', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'foldy-import-route-'));
+  try {
+    await writeFile(path.join(root, 'index.html'), '<h1>Imported</h1>');
+    await writeFile(path.join(root, 'workbook.json'), JSON.stringify({ workbookId: 'import-book', revisions: [{ revisionId: 'source', state: 'FROZEN' }] }));
+    const metadata = { kind: 'prototype', importedFrom: 'folder', baseDir: root, entryFile: 'index.html' };
+    const preflight = await preflightFoldyImport({ projectId, projectRoot: root, readProjectMetadata: () => metadata });
+    const result = await invokeLegacyEnrollmentRoute({ root, metadata, route: '/api/projects/:id/foldy/import-adoption', body: { ...preflight, confirmExactContent: true } });
+    expect(result.status).toBe(200);
+    expect(result.metadata.foldy).toBe(true);
+    expect(result.body.currentRevisionId).not.toBe('source');
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
 
 beforeAll(() => {
   priorWrenKey = process.env.OD_FOLDY_WREN_PUBLIC_KEY;

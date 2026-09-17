@@ -424,11 +424,28 @@ describe('FileViewer SVG artifacts', () => {
     expect(srcDocFrameAfter?.srcdoc).toContain('data-od-lazy-srcdoc-transport');
     expect(srcDocFrameAfter?.srcdoc).not.toContain('__odArtifactBootCount');
 
+    // Switching modes can precede the bootstrap listener's load event.
+    expect(srcDocActivationMessages(postMessageSpy.mock.calls)).toHaveLength(0);
+    fireEvent.load(srcDocFrameAfter!);
     await waitFor(() => {
       const activations = srcDocActivationMessages(postMessageSpy.mock.calls);
       expect(activations.at(-1)?.html).toContain('__odArtifactBootCount');
       expect(activations.at(-1)?.html).toContain('data-od-selection-bridge');
     });
+    const activationCount = srcDocActivationMessages(postMessageSpy.mock.calls).length;
+    fireEvent.load(srcDocFrameAfter!);
+    expect(srcDocActivationMessages(postMessageSpy.mock.calls)).toHaveLength(activationCount);
+
+    fireEvent.click(screen.getByRole('button', { name: /^source$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^preview$/i }));
+    const remounted = container.querySelector('iframe[data-od-render-mode="srcdoc"]') as HTMLIFrameElement;
+    expect(remounted).not.toBe(srcDocFrameAfter);
+    const remountedPost = vi.spyOn(remounted.contentWindow!, 'postMessage');
+    expect(srcDocActivationMessages(remountedPost.mock.calls)).toHaveLength(0);
+    fireEvent.load(remounted);
+    expect(srcDocActivationMessages(remountedPost.mock.calls).at(-1)?.html).toContain('__odArtifactBootCount');
+    fireEvent.load(remounted);
+    expect(srcDocActivationMessages(remountedPost.mock.calls)).toHaveLength(1);
   });
 
   it('uses the next file URL immediately when switching URL-loaded HTML previews', () => {
@@ -1286,6 +1303,7 @@ describe('FileViewer tweaks toolbar', () => {
       expect(activeFrame.srcdoc).toContain('data-od-lazy-srcdoc-transport');
       return activeFrame;
     });
+    fireEvent.load(frame);
     await waitFor(() => {
       expect(srcDocActivationMessages(postMessageSpy.mock.calls).at(-1)?.html).toContain('data-od-selection-bridge');
     });

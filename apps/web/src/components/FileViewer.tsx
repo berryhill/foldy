@@ -3534,6 +3534,13 @@ function HtmlViewer({
   const urlPreviewIframeRef = useRef<HTMLIFrameElement | null>(null);
   const srcDocPreviewIframeRef = useRef<HTMLIFrameElement | null>(null);
   const activatedSrcDocTransportHtmlRef = useRef<string | null>(null);
+  const readySrcDocTransportFrameRef = useRef<HTMLIFrameElement | null>(null);
+  const attachSrcDocPreviewIframe = useCallback((frame: HTMLIFrameElement | null) => {
+    // Readiness and delivery belong to this iframe instance, not the last one.
+    srcDocPreviewIframeRef.current = frame;
+    readySrcDocTransportFrameRef.current = null;
+    activatedSrcDocTransportHtmlRef.current = null;
+  }, []);
   const isActivePreviewIframeSource = useCallback((source: MessageEventSource | null) => {
     return !!source && source === iframeRef.current?.contentWindow;
   }, []);
@@ -4003,6 +4010,8 @@ function HtmlViewer({
   const activateSrcDocTransport = useCallback((target: HTMLIFrameElement | null = srcDocPreviewIframeRef.current) => {
     const win = target?.contentWindow;
     if (!win || !srcDoc || useUrlLoadPreview || !useLazySrcDocTransport) return false;
+    // The first effect can run before the bootstrap's message listener exists.
+    if (target !== readySrcDocTransportFrameRef.current) return false;
     if (activatedSrcDocTransportHtmlRef.current === srcDoc) return false;
     win.postMessage({ type: 'od:srcdoc-transport-activate', html: srcDoc }, '*');
     activatedSrcDocTransportHtmlRef.current = srcDoc;
@@ -5976,7 +5985,7 @@ function HtmlViewer({
                     />
                     <iframe
                       key={srcDocTransportResetKey}
-                      ref={srcDocPreviewIframeRef}
+                      ref={attachSrcDocPreviewIframe}
                       data-testid={useUrlLoadPreview ? 'artifact-preview-frame-srcdoc' : 'artifact-preview-frame'}
                       data-od-render-mode="srcdoc"
                       data-od-active={useUrlLoadPreview ? 'false' : 'true'}
@@ -5985,8 +5994,10 @@ function HtmlViewer({
                       title={file.name}
                       sandbox="allow-scripts allow-downloads"
                       srcDoc={srcDocTransportContent}
-                      onLoad={() => {
-                        const frame = srcDocPreviewIframeRef.current;
+                      onLoad={(event) => {
+                        const frame = event.currentTarget;
+                        if (frame !== srcDocPreviewIframeRef.current) return;
+                        readySrcDocTransportFrameRef.current = frame;
                         if (!useUrlLoadPreview) iframeRef.current = frame;
                         activateSrcDocTransport(frame);
                         dcViewportRestoreAtRef.current = Date.now();
