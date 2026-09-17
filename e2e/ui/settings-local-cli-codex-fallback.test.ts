@@ -165,6 +165,7 @@ async function openLocalCliSettings(
   const codexCard = dialog.getByRole('button', { name: /Codex CLI/i });
   await expect(codexCard).toBeVisible();
   await codexCard.click();
+  await dialog.locator('details.agent-cli-env > summary').click();
   await expect(
     dialog.getByLabel(/Codex executable path|Codex 可执行文件路径/i),
   ).toBeVisible();

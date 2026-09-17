@@ -212,7 +212,7 @@ async function openConnectorsSettings(
 }
 
 test.describe('Settings connectors auth happy path', () => {
-  test('shows an inline connector error when connect fails', async ({ page }) => {
+  test('shows a panel connector error when connect fails', async ({ page }) => {
     const dialog = await openConnectorsSettings(page, {
       onConnect: () => ({
         status: 500,
@@ -225,13 +225,13 @@ test.describe('Settings connectors auth happy path', () => {
     const githubCard = connectorCard(dialog, 'github');
     await githubCard.getByRole('button', { name: 'Connect' }).click();
 
-    await expect(githubCard.getByRole('alert')).toContainText(
+    await expect(dialog.locator('.connector-panel-alert').filter({ hasText: 'GitHub' }).getByRole('status')).toContainText(
       'Composio provider is not configured',
     );
     await expect(githubCard.getByRole('button', { name: 'Connect' })).toBeVisible();
   });
 
-  test('clears the inline error when the user retries and the connector succeeds', async ({ page }) => {
+  test('clears the panel error when the user retries and the connector succeeds', async ({ page }) => {
     let connectAttempts = 0;
     const dialog = await openConnectorsSettings(page, {
       onConnect: () => {
@@ -261,7 +261,7 @@ test.describe('Settings connectors auth happy path', () => {
     const githubCard = connectorCard(dialog, 'github');
 
     await githubCard.getByRole('button', { name: 'Connect' }).click();
-    await expect(githubCard.getByRole('alert')).toContainText(
+    await expect(dialog.locator('.connector-panel-alert').filter({ hasText: 'GitHub' }).getByRole('status')).toContainText(
       'Composio provider is not configured',
     );
 
@@ -269,7 +269,7 @@ test.describe('Settings connectors auth happy path', () => {
 
     await expect.poll(() => connectAttempts).toBe(2);
     await expect(githubCard.getByRole('button', { name: 'Disconnect' })).toBeVisible();
-    await expect(githubCard.getByRole('alert')).toHaveCount(0);
+    await expect(dialog.locator('.connector-panel-alert').filter({ hasText: 'GitHub' }).getByRole('status')).toHaveCount(0);
   });
 
   test('switches from Connect to Disconnect on success, then returns to Connect after a successful disconnect', async ({ page }) => {

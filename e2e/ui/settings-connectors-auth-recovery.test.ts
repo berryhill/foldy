@@ -257,7 +257,7 @@ test('clears pending authorization when OAuth launch is blocked after redirect_r
     const githubCard = connectorCard(dialog, 'github');
     await githubCard.getByRole('button', { name: 'Connect' }).click();
     await expect(githubCard.getByRole('button', { name: 'Cancel' })).toHaveCount(0);
-    await expect(githubCard.getByRole('alert')).toContainText(
+    await expect(dialog.locator('.connector-panel-alert').filter({ hasText: 'GitHub' }).getByRole('status')).toContainText(
       'Popup blocked. Allow popups for Open Design and try again.',
     );
     await expect
@@ -303,7 +303,7 @@ test('clears pending authorization when OAuth launch is blocked after redirect_r
     await githubCard.getByRole('button', { name: 'Cancel' }).click();
 
     await expect(githubCard.getByRole('button', { name: 'Cancel' })).toBeVisible();
-    await expect(githubCard.getByRole('alert')).toContainText(
+    await expect(dialog.locator('.connector-panel-alert').filter({ hasText: 'GitHub' }).getByRole('status')).toContainText(
       "Couldn't cancel authorization. Try again.",
     );
     await expect

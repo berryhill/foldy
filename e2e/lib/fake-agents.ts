@@ -114,7 +114,15 @@ let prompt = '';
 let emitted = false;
 process.stdin.setEncoding('utf8');
 process.stdin.resume();
-process.stdin.on('data', (chunk) => { prompt += chunk; });
+process.stdin.on('data', (chunk) => {
+  prompt += chunk;
+  // Claude's interactive JSONL transport deliberately keeps stdin open.
+  // Consume the initial complete user message rather than waiting for EOF.
+  if (agentId === 'claude' && args.includes('--input-format') && args.includes('stream-json') && prompt.includes('\\n')) {
+    process.stdin.pause();
+    void emitRun(prompt).catch(failUnhandled);
+  }
+});
 process.stdin.on('end', () => {
   void emitRun(prompt).catch(failUnhandled);
 });

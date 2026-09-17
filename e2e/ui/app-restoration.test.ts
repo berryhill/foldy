@@ -312,7 +312,8 @@ test('visiting an uploaded design file route restores its tab and file workspace
     throw new Error(`unexpected project route: ${current.pathname}`);
   }
 
-  await gotoProjectRoute(page, `/projects/${projectId}/files/deep-linked-reference.png`);
+  const uploadedName = await fileTab.locator('.ws-tab-label').innerText();
+  await gotoProjectRoute(page, `/projects/${projectId}/files/${encodeURIComponent(uploadedName)}`);
 
   await expect(page.getByTestId('file-workspace')).toBeVisible();
   await expect(fileTab).toHaveAttribute('aria-selected', 'true');
@@ -366,7 +367,8 @@ test('returning from an uploaded design file route to the project root keeps the
     throw new Error(`unexpected project route: ${current.pathname}`);
   }
 
-  await gotoProjectRoute(page, `/projects/${projectId}/files/root-design-reference.png`);
+  const uploadedName = await fileTab.locator('.ws-tab-label').innerText();
+  await gotoProjectRoute(page, `/projects/${projectId}/files/${encodeURIComponent(uploadedName)}`);
   await expect(fileTab).toHaveAttribute('aria-selected', 'true');
   await gotoProjectRoute(page, `/projects/${projectId}`);
 
@@ -1361,7 +1363,8 @@ test('opening an uploaded file route keeps the older conversation present in his
   if (projects !== 'projects' || !projectId) {
     throw new Error(`unexpected project route: ${current.pathname}`);
   }
-  await gotoProjectRoute(page, `/projects/${projectId}/files/conversation-surface-reference.png`);
+  const uploadedName = await tabBySuffix(page, 'conversation-surface-reference.png').locator('.ws-tab-label').innerText();
+  await gotoProjectRoute(page, `/projects/${projectId}/files/${encodeURIComponent(uploadedName)}`);
 
   await expect(page.getByTestId('file-workspace')).toBeVisible();
   await expect(tabBySuffix(page, 'conversation-surface-reference.png')).toHaveAttribute('aria-selected', 'true');
@@ -1564,7 +1567,8 @@ test('returning from a file deep-link to the project root keeps the chosen file 
   await expect(page.locator('.msg.user .user-text').filter({ hasText: firstPrompt }).first()).toBeVisible();
   await expect(page.locator('.msg.user .user-text').filter({ hasText: secondPrompt })).toHaveCount(0);
 
-  await gotoProjectRoute(page, `/projects/${projectId}/files/conversation-root-file.png`);
+  const uploadedName = await tabBySuffix(page, 'conversation-root-file.png').locator('.ws-tab-label').innerText();
+  await gotoProjectRoute(page, `/projects/${projectId}/files/${encodeURIComponent(uploadedName)}`);
 
   const fileTab = tabBySuffix(page, 'conversation-root-file.png');
   await expect(fileTab).toHaveAttribute('aria-selected', 'true');

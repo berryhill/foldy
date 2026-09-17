@@ -410,7 +410,8 @@ test('quick switcher can restore a generated artifact tab after reload in a mixe
   await page.reload();
   await expectWorkspaceReady(page);
   await expect(fileTab).toHaveAttribute('aria-selected', 'true');
-  await expect(artifactTab).toHaveCount(0);
+  await expect(artifactTab).toHaveCount(1);
+  await expect(artifactTab).toHaveAttribute('aria-selected', 'false');
 
   await openQuickSwitcher(page);
   const quickSwitcher = page.locator('.qs-overlay');

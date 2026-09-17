@@ -438,6 +438,8 @@ export function ProjectView({
     active: null,
   });
   const tabsLoadedRef = useRef(false);
+  const [tabsLoadedProjectId, setTabsLoadedProjectId] = useState<string | null>(null);
+  const pendingRouteFileRef = useRef<string | null>(null);
   // Routed to FileWorkspace — bumped whenever the user clicks "open" on a
   // tool card, an attachment chip, or a produced-file chip in chat. We
   // include a nonce so re-clicking the same name after the user closed the
@@ -792,11 +794,14 @@ export function ProjectView({
   useEffect(() => {
     let cancelled = false;
     tabsLoadedRef.current = false;
+    setTabsLoadedProjectId(null);
+    setOpenRequest(null);
     (async () => {
       const state = await loadTabs(project.id);
       if (cancelled) return;
       setOpenTabsState(state);
       tabsLoadedRef.current = true;
+      setTabsLoadedProjectId(project.id);
     })();
     return () => {
       cancelled = true;
@@ -929,9 +934,11 @@ export function ProjectView({
   // FileWorkspace promotes it to an active tab. We watch routeFileName
   // (the parsed segment) so back/forward navigation triggers the same path.
   useEffect(() => {
+    pendingRouteFileRef.current = routeFileName;
+    if (tabsLoadedProjectId !== project.id) return;
     if (!routeFileName) return;
     requestOpenFile(routeFileName);
-  }, [routeFileName, requestOpenFile]);
+  }, [routeFileName, requestOpenFile, project.id, tabsLoadedProjectId]);
 
   // Sync the URL when the active tab changes, so reload + share-link both
   // land back on the same view. Replace (not push) on tab activation so the
@@ -946,6 +953,13 @@ export function ProjectView({
   const lastSyncedRouteKeyRef = useRef<string | null>(null);
   const lastSeenRouteConversationIdRef = useRef<string | null>(null);
   useEffect(() => {
+    // Hydration must precede route opening, and route opening must settle
+    // before persisted/empty tab state is allowed to replace the requested URL.
+    if (tabsLoadedProjectId !== project.id) return;
+    if (pendingRouteFileRef.current) {
+      if (openTabsState.active !== pendingRouteFileRef.current) return;
+      pendingRouteFileRef.current = null;
+    }
     const target = openTabsState.active && (
       openTabsState.tabs.includes(openTabsState.active)
       || projectFileNames.has(openTabsState.active)
@@ -953,7 +967,7 @@ export function ProjectView({
     )
       ? openTabsState.active
       : null;
-    const nextKey = `${activeConversationId ?? ''}:${target ?? ''}`;
+    const nextKey = `${project.id}:${activeConversationId ?? ''}:${target ?? ''}`;
     if (nextKey === lastSyncedRouteKeyRef.current) return;
     lastSyncedRouteKeyRef.current = nextKey;
     lastSyncedConversationIdRef.current = activeConversationId;
@@ -974,7 +988,7 @@ export function ProjectView({
       },
       { replace: true },
     );
-  }, [openTabsState.active, projectFileNames, project.id, activeConversationId]);
+  }, [openTabsState.active, projectFileNames, project.id, activeConversationId, tabsLoadedProjectId, routeFileName]);
 
   const handleEnsureProject = useCallback(async (): Promise<string | null> => {
     return project.id;
