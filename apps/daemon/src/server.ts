@@ -330,6 +330,7 @@ import { registerRoutineRoutes, routineDbRowToContract } from './routine-routes.
 import { registerFoldyPublicationRoutes, type FoldyPublicationRoutesService } from './routes/foldy-publication.js';
 import { createFoldyMcpRevocationService, registerFoldyMcpRoutes, type FoldyMcpRoutesService } from './routes/foldy-mcp.js';
 import { registerFoldyCynderRoutes } from './routes/foldy-cynder.js';
+import { registerNativeDeploymentRoutes } from './routes/foldy-native-deployment.js';
 import { FoldyPublicationStore } from './foldy-publications/store.js';
 import { createFoldyMcpGrantStore } from './foldy-mcp/grants.js';
 import {
@@ -3739,6 +3740,9 @@ export async function startServer({
       isFormalProject: isFormalFoldyProject,
     },
   });
+  // No stateful hosting admission is configured: authenticate first, then return
+  // an explicit unavailable result rather than falling back to static deployment.
+  registerNativeDeploymentRoutes(app, { access: browserPasswordAccess });
   const foldyMcpRevocations = createFoldyMcpRevocationService({
     grants: foldyMcpGrants,
     revokeMcpGrant: (input) => foldyCynderDeployments.revokeMcpGrant(input),

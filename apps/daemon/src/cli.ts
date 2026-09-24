@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // @ts-nocheck
 import { runFoldyImportCli } from './foldy-import-cli.js';
+import { runFoldyInstanceCli } from './foldy-runtime/instance-cli.js';
+import { runNativeDeploymentCli } from './foldy-native-cli.js';
 import { runDaemonCliStartup } from './daemon-startup.js';
 import { runLiveArtifactsMcpServer } from './mcp-live-artifacts-server.js';
 import { runArtifactsCli } from './artifacts-cli.js';
@@ -172,7 +174,12 @@ const PLUGIN_LIST_BOOLEAN_FLAGS = new Set([
 ]);
 
 const SUBCOMMAND_MAP = {
-  foldy: async (args) => { process.exit(await runFoldyImportCli(args)); },
+  'native-deployment': runNativeDeploymentCli,
+  foldy: async (args) => {
+    process.exit(await (args[0] === 'instance'
+      ? runFoldyInstanceCli(args.slice(1))
+      : runFoldyImportCli(args)));
+  },
   artifacts: runArtifacts,
   media: runMedia,
   mcp: runMcp,

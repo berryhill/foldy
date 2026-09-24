@@ -1,0 +1,85 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { createHash, randomBytes } from 'node:crypto';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { createServer } from 'node:http';
+import { McpOAuth } from '../dist/mcp-oauth.js';
+import type { OwnerAuthority } from '../src/owner-authority.js';
+const hash = (v: string) => createHash('sha256').update(v).digest('hex');
+test('registration capacity expires without eviction; continuation expires and cannot authorize', async t => {
+ let now=Date.now();t.mock.method(Date,'now',()=>now);
+ const oauth=new McpOAuth({state:{ownerVerifier:'test-owner',generation:1},ownerCookie:()=>false} as unknown as OwnerAuthority,'expiry-test');
+ let origin='';const server=createServer((req,res)=>{void oauth.route(req,res,origin);});
+ server.listen(0,'127.0.0.1');await once(server,'listening');const address=server.address();assert.ok(address&&typeof address!=='string');origin=`http://127.0.0.1:${address.port}`;
+ const register=()=>fetch(origin+'/oauth/register',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({redirect_uris:['https://client.example/callback']})});
+ try {
+  const first=await (await register()).json();
+  const request=new URLSearchParams({client_id:first.client_id,redirect_uri:first.redirect_uris[0],resource:origin+'/mcp',response_type:'code',code_challenge_method:'S256',code_challenge:'a'.repeat(43)});
+  const authorize=()=>fetch(origin+'/oauth/authorize?'+request);
+  const html=await (await authorize()).text(), ticket=html.match(/href="(\/oauth\/continue\?ticket=[^"]+)"/)![1];
+  const forbidden=await fetch(origin+'/oauth/consent',{method:'POST',headers:{origin,'content-type':'application/x-www-form-urlencoded'},body:new URLSearchParams({ticket:new URL(ticket,origin).searchParams.get('ticket')!,decision:'allow'})});assert.equal(forbidden.status,403);
+  now+=300001;assert.equal((await fetch(origin+ticket)).status,400);
+  for(let i=1;i<1000;i++){if(i%20===0)now+=60001;assert.equal((await register()).status,201);}
+  now+=60001;assert.equal((await register()).status,400);
+  assert.equal((await authorize()).status,200,'full capacity does not evict legitimate clients');
+  now+=86400001;assert.equal((await authorize()).status,400);assert.equal((await register()).status,201);
+ } finally {server.closeAllConnections();await new Promise<void>(r=>server.close(()=>r()));}
+});
+test('real process OAuth consent/PKCE, resource binding, safe MCP read, revocation and negative exchanges', async () => {
+ const root=mkdtempSync(join(tmpdir(),'foldy-oauth-')); const bundle=join(root,'bundle'),state=join(root,'state');mkdirSync(bundle);mkdirSync(state,{mode:0o700});
+ const html='<!doctype html><h1>OAuth proof</h1>';writeFileSync(join(bundle,'index.html'),html);
+ const manifest=JSON.stringify({schemaVersion:'foldy-release-bundle.v1',instanceId:'instance-oauth',projectId:'project-1',workbookId:'workbook-1',revisionId:'revision-1',runtimeImageDigest:`sha256:${'a'.repeat(64)}`,members:[{path:'index.html',mediaType:'text/html',bytes:Buffer.byteLength(html),sha256:hash(html),executableMode:0}]});writeFileSync(join(bundle,'manifest.json'),manifest);
+ const assertion=randomBytes(32).toString('hex');writeFileSync(join(root,'bootstrap.json'),JSON.stringify({instanceId:'instance-oauth',verifier:hash(assertion),expiresAt:Date.now()+600000}),{mode:0o600});
+ const child=spawn(process.execPath,[resolve('dist/main.js')],{env:{...process.env,FOLDY_BUNDLE_DIR:bundle,FOLDY_BUNDLE_DIGEST:hash(manifest),FOLDY_STATE_DIR:state,FOLDY_BOOTSTRAP_FILE:join(root,'bootstrap.json'),FOLDY_DEV_LOOPBACK:'1',FOLDY_PORT:'0'},stdio:['ignore','pipe','pipe']});
+ let logs='';child.stdout.on('data',c=>logs+=c);child.stderr.on('data',c=>logs+=c);
+ try {
+  for(let i=0;i<100&&!logs.match(/FOLDY_LISTENING (\d+)/);i++)await new Promise(r=>setTimeout(r,20));
+  const port=logs.match(/FOLDY_LISTENING (\d+)/)?.[1];assert.ok(port,'runtime starts');const origin=`http://127.0.0.1:${port}`;
+  const json=(path:string,body:unknown,headers:Record<string,string>={})=>fetch(origin+path,{method:'POST',headers:{'content-type':'application/json',...headers},body:JSON.stringify(body),redirect:'manual'});
+  const form=(path:string,body:Record<string,string>,headers:Record<string,string>={})=>fetch(origin+path,{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded',...headers},body:new URLSearchParams(body),redirect:'manual'});
+  const metadata=await (await fetch(origin+'/.well-known/oauth-authorization-server')).json();assert.deepEqual(metadata.grant_types_supported,['authorization_code']);assert.deepEqual(metadata.code_challenge_methods_supported,['S256']);
+  assert.equal((await (await fetch(origin+'/.well-known/oauth-protected-resource/mcp')).json()).resource,origin+'/mcp');
+  assert.equal((await json('/oauth/register',{redirect_uris:['https://client.example/callback']})).status,423);
+  const claim=await json('/api/claim',{assertion});const cookie=claim.headers.get('set-cookie')!.split(';')[0];
+  const owner={cookie,origin};
+  for(const redirect of ['http://client.example/callback','https://client.example/#fragment','javascript:alert(1)','https://name:pass@client.example/callback'])assert.equal((await json('/oauth/register',{redirect_uris:[redirect]})).status,400);
+  const registration=await json('/oauth/register',{client_name:'Proof <client>',redirect_uris:['https://client.example/callback','http://127.0.0.1:43210/callback'],token_endpoint_auth_method:'none',grant_types:['authorization_code'],response_types:['code']});assert.equal(registration.status,201);const client=await registration.json();
+  const verifier=randomBytes(32).toString('base64url');const request={client_id:client.client_id,redirect_uri:'https://client.example/callback',response_type:'code',resource:origin+'/mcp',code_challenge:createHash('sha256').update(verifier).digest('base64url'),code_challenge_method:'S256',state:'round trip + &'};
+  const authorize=(v:Record<string,string>,headers:Record<string,string>={})=>fetch(origin+'/oauth/authorize?'+new URLSearchParams(v),{headers,redirect:'manual'});
+  const entry=await authorize(request);assert.equal(entry.status,200);assert.equal(entry.headers.get('cache-control'),'no-store');const shell=await entry.text();assert.ok(!shell.includes('name="decision"'));const continuation=shell.match(/href="(\/oauth\/continue\?ticket=[^"]+)"/)![1];
+  const resumed=await fetch(origin+continuation,{headers:owner});assert.equal(resumed.status,200);assert.match(await resumed.text(),/Authorize these permissions/);
+  assert.equal((await fetch(origin+continuation,{headers:owner})).status,400);
+  assert.equal((await authorize(request,{cookie:'foldy-viewer=not-owner'})).status,200);
+  for(const bad of [{resource:origin+'/other'},{redirect_uri:'https://evil.example/callback'},{code_challenge_method:'plain'},{scope:'foldy:read foldy:publish'}])assert.equal((await authorize({...request,...bad},owner)).status,400);
+  const page=await authorize(request,owner);assert.equal(page.status,200);assert.equal(page.headers.get('location'),null);const text=await page.text();assert.match(text,/Proof &lt;client&gt;/);const ticket=text.match(/name="ticket" value="([^"]+)"/)![1];
+  assert.equal((await form('/oauth/consent',{ticket,decision:'allow'},{cookie})).status,403);
+  assert.equal((await form('/oauth/consent',{ticket,decision:'allow'},{origin,cookie:'foldy-viewer=not-owner'})).status,403);
+  const consent=await form('/oauth/consent',{ticket,decision:'allow'},owner);assert.equal(consent.status,303);const callback=new URL(consent.headers.get('location')!);assert.equal(callback.searchParams.get('state'),request.state);const code=callback.searchParams.get('code')!;
+  assert.equal((await form('/oauth/consent',{ticket,decision:'allow'},owner)).status,400);
+  const exchange={grant_type:'authorization_code',client_id:client.client_id,code,code_verifier:verifier,redirect_uri:request.redirect_uri,resource:request.resource};
+  for(const bad of [{code_verifier:randomBytes(32).toString('base64url')},{resource:origin+'/other'},{redirect_uri:'https://evil.example/callback'},{client_id:'unregistered'}])assert.equal((await form('/oauth/token',{...exchange,...bad})).status,400);
+  const tokenResponse=await form('/oauth/token',exchange);assert.equal(tokenResponse.status,200);const token=await tokenResponse.json();assert.equal(token.scope,'foldy:read');assert.equal(token.expires_in,600);assert.equal(token.refresh_token,undefined);
+  assert.equal((await form('/oauth/token',exchange)).status,400);assert.equal((await form('/oauth/token',{grant_type:'refresh_token'})).status,400);
+  const custody=readFileSync(join(state,'authority.json'),'utf8');assert.ok(!custody.includes(token.access_token));assert.ok(!custody.includes(code));assert.equal(statSync(join(state,'authority.json')).mode&0o077,0);
+  const auth={authorization:`Bearer ${token.access_token}`,accept:'application/json, text/event-stream'};
+  const init=await json('/mcp',{jsonrpc:'2.0',id:1,method:'initialize',params:{protocolVersion:'2025-03-26',capabilities:{},clientInfo:{name:'oauth-proof',version:'1'}}},auth);assert.equal(init.status,200);
+  const session={...auth,'mcp-session-id':init.headers.get('mcp-session-id')!,'mcp-protocol-version':'2025-03-26'};
+  await json('/mcp',{jsonrpc:'2.0',method:'notifications/initialized'},session);
+  const tools=await (await json('/mcp',{jsonrpc:'2.0',id:2,method:'tools/list'},session)).json();assert.ok(tools.result.tools.every((t:any)=>!['create_update','approve_update_revision','publish_update'].includes(t.name)));
+  const read=await (await json('/mcp',{jsonrpc:'2.0',id:3,method:'tools/call',params:{name:'get_file',arguments:{path:'index.html'}}},session)).json();assert.equal(JSON.parse(read.result.content[0].text).observedRevisionId,'revision-1');
+  const denied=await (await json('/mcp',{jsonrpc:'2.0',id:4,method:'tools/call',params:{name:'publish_update',arguments:{}}},session)).json();assert.ok(denied.error||denied.result.isError);
+  assert.equal((await form('/oauth/revoke',{client_id:client.client_id,token:token.access_token})).status,200);
+  const revoked=await json('/mcp',{jsonrpc:'2.0',id:5,method:'tools/list'},session);assert.equal(revoked.status,401);assert.match(revoked.headers.get('www-authenticate')!,/oauth-protected-resource\/mcp/);
+  const draftPage=await authorize({...request,scope:'foldy:read foldy:draft:write'},owner);const draftTicket=(await draftPage.text()).match(/name="ticket" value="([^"]+)"/)![1];
+  const draftConsent=await form('/oauth/consent',{ticket:draftTicket,decision:'allow'},owner);const draftCode=new URL(draftConsent.headers.get('location')!).searchParams.get('code')!;
+  const draftToken=await (await form('/oauth/token',{...exchange,code:draftCode})).json();assert.equal(draftToken.scope,'foldy:read foldy:draft:write');
+  for(let i=0;i<15;i++)assert.equal((await json('/oauth/register',{redirect_uris:['https://client.example/callback']})).status,201);
+  assert.equal((await json('/oauth/register',{redirect_uris:['https://client.example/callback']},{'x-forwarded-for':'203.0.113.42'})).status,429);
+  assert.equal((await authorize(request,owner)).status,200,'rate limiting must not evict an existing client');
+  assert.ok(!logs.includes(token.access_token));assert.ok(!logs.includes(assertion));
+ } finally {const exit=once(child,'exit');child.kill();await exit;rmSync(root,{recursive:true,force:true});}
+});

@@ -1,0 +1,65 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { createHash, randomBytes } from 'node:crypto';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { createServer } from 'node:http';
+import { McpOAuth } from '../dist/mcp-oauth.js';
+import type { OwnerAuthority } from '../src/owner-authority.js';
+const hash = (v: string) => createHash('sha256').update(v).digest('hex');
+test('owner grant listing and exact opaque/OAuth session revocation through HTTP and CLI', async () => {
+ const root=mkdtempSync(join(tmpdir(),'foldy-oauth-')); const bundle=join(root,'bundle'),state=join(root,'state');mkdirSync(bundle);mkdirSync(state,{mode:0o700});
+ const html='<!doctype html><h1>OAuth proof</h1>';writeFileSync(join(bundle,'index.html'),html);
+ const manifest=JSON.stringify({schemaVersion:'foldy-release-bundle.v1',instanceId:'instance-oauth',projectId:'project-1',workbookId:'workbook-1',revisionId:'revision-1',runtimeImageDigest:`sha256:${'a'.repeat(64)}`,members:[{path:'index.html',mediaType:'text/html',bytes:Buffer.byteLength(html),sha256:hash(html),executableMode:0}]});writeFileSync(join(bundle,'manifest.json'),manifest);
+ const assertion=randomBytes(32).toString('hex');writeFileSync(join(root,'bootstrap.json'),JSON.stringify({instanceId:'instance-oauth',verifier:hash(assertion),expiresAt:Date.now()+600000}),{mode:0o600});
+ const child=spawn(process.execPath,[resolve('dist/main.js')],{env:{...process.env,FOLDY_BUNDLE_DIR:bundle,FOLDY_BUNDLE_DIGEST:hash(manifest),FOLDY_STATE_DIR:state,FOLDY_BOOTSTRAP_FILE:join(root,'bootstrap.json'),FOLDY_DEV_LOOPBACK:'1',FOLDY_PORT:'0'},stdio:['ignore','pipe','pipe']});
+ let logs='';child.stdout.on('data',c=>logs+=c);child.stderr.on('data',c=>logs+=c);
+ try {
+  for(let i=0;i<100&&!logs.match(/FOLDY_LISTENING (\d+)/);i++)await new Promise(r=>setTimeout(r,20));
+  const port=logs.match(/FOLDY_LISTENING (\d+)/)?.[1];assert.ok(port,'runtime starts');const origin=`http://127.0.0.1:${port}`;
+  const json=(path:string,body:unknown,headers:Record<string,string>={})=>fetch(origin+path,{method:'POST',headers:{'content-type':'application/json',...headers},body:JSON.stringify(body),redirect:'manual'});
+  const form=(path:string,body:Record<string,string>,headers:Record<string,string>={})=>fetch(origin+path,{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded',...headers},body:new URLSearchParams(body),redirect:'manual'});
+  const metadata=await (await fetch(origin+'/.well-known/oauth-authorization-server')).json();assert.deepEqual(metadata.grant_types_supported,['authorization_code']);assert.deepEqual(metadata.code_challenge_methods_supported,['S256']);
+  assert.equal((await (await fetch(origin+'/.well-known/oauth-protected-resource/mcp')).json()).resource,origin+'/mcp');
+  assert.equal((await json('/oauth/register',{redirect_uris:['https://client.example/callback']})).status,423);
+  const claim=await json('/api/claim',{assertion});const cookie=claim.headers.get('set-cookie')!.split(';')[0];
+  const owner={cookie,origin};
+
+ const get=()=>fetch(origin+'/api/mcp-grants',{headers:owner});
+ assert.equal((await fetch(origin+'/api/mcp-grants')).status,401);
+ const first=await (await json('/api/mcp-grants',{},owner)).json();
+ assert.equal((await json('/api/mcp-grants',{scopes:['foldy:read','foldy:owner']},owner)).status,400);
+ const client=await (await json('/oauth/register',{redirect_uris:['https://client.example/callback']})).json();
+ const verifier=randomBytes(32).toString('base64url');
+ const request={client_id:client.client_id,redirect_uri:client.redirect_uris[0],response_type:'code',resource:origin+'/mcp',code_challenge:createHash('sha256').update(verifier).digest('base64url'),code_challenge_method:'S256'};
+ const page=await (await fetch(origin+'/oauth/authorize?'+new URLSearchParams(request),{headers:owner})).text();
+ const ticket=page.match(/name="ticket" value="([^"]+)"/)![1];
+ const consent=await form('/oauth/consent',{ticket,decision:'allow'},owner);
+ const code=new URL(consent.headers.get('location')!).searchParams.get('code')!;
+ const oauth=await (await form('/oauth/token',{...request,grant_type:'authorization_code',code,code_verifier:verifier})).json();
+ const init=async(token:string)=>{const auth={authorization:'Bearer '+token,accept:'application/json, text/event-stream'};const response=await json('/mcp',{jsonrpc:'2.0',id:1,method:'initialize',params:{protocolVersion:'2025-03-26',capabilities:{},clientInfo:{name:'admin-test',version:'1'}}},auth);assert.equal(response.status,200);return {...auth,'mcp-session-id':response.headers.get('mcp-session-id')!,'mcp-protocol-version':'2025-03-26'};};
+ const opaqueSession=await init(first.token),oauthSession=await init(oauth.access_token);
+ const listing=await (await get()).json();assert.equal(listing.grants.length,2);
+ for(const g of listing.grants)assert.deepEqual(Object.keys(g).sort(),['active','expiresAt','grantId','kind','scopes']);
+ const raw=JSON.stringify(listing);for(const token of [first.token,oauth.access_token]){assert.ok(!raw.includes(token));assert.ok(!raw.includes(hash(token)));}
+ assert.equal((await fetch(origin+'/api/mcp-grants',{headers:opaqueSession})).status,401);
+ assert.equal((await json('/api/mcp-grants/revoke-all',{},oauthSession)).status,401);
+ const listTools=(headers:Record<string,string>)=>json('/mcp',{jsonrpc:'2.0',id:2,method:'tools/list'},headers);
+ assert.equal((await json('/api/mcp-grants/revoke',{grantId:first.grantId},owner)).status,200);
+ assert.equal((await listTools(opaqueSession)).status,401);assert.equal((await listTools(oauthSession)).status,200);
+ assert.equal((await listTools({...oauthSession,'mcp-session-id':opaqueSession['mcp-session-id']})).status,404);
+ const second=await (await json('/api/mcp-grants',{},owner)).json();const secondSession=await init(second.token);
+ const {runFoldyInstanceCli}=await import('../../daemon/src/foldy-runtime/instance-cli.ts');
+ const cookieFile=join(root,'owner-cookie');writeFileSync(cookieFile,cookie,{mode:0o600});
+ let stdout='',stderr='';const args=['--instance-url',origin,'--owner-cookie-file',cookieFile,'--allow-loopback-http','--json'];
+ assert.equal(await runFoldyInstanceCli(['mcp-grant-list',...args],{stdout:s=>stdout+=s,stderr:s=>stderr+=s}),0);assert.equal(JSON.parse(stdout).grants.length,2);
+ stdout='';assert.equal(await runFoldyInstanceCli(['mcp-grant-revoke-all',...args],{stdout:s=>stdout+=s,stderr:s=>stderr+=s}),0);assert.equal(JSON.parse(stdout).revoked,true);assert.equal(stderr,'');
+ assert.equal((await listTools(secondSession)).status,401);assert.equal((await listTools(oauthSession)).status,401);assert.deepEqual((await (await get()).json()).grants,[]);
+ const third=await (await json('/api/mcp-grants',{},owner)).json();const thirdSession=await init(third.token);
+ for(const old of [secondSession,oauthSession])assert.equal((await listTools({...thirdSession,'mcp-session-id':old['mcp-session-id']})).status,404);
+ for(const secret of [first.token,second.token,third.token,oauth.access_token,cookie])assert.ok(!logs.includes(secret)&&!stdout.includes(secret));
+ } finally {const exit=once(child,'exit');child.kill();await exit;rmSync(root,{recursive:true,force:true});}
+});

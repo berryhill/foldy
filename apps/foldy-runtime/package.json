@@ -1,0 +1,15 @@
+{
+  "name": "@open-design/foldy-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {"node": "~24"},
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/main.js",
+    "test": "pnpm run build && node --test tests/*.test.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {"@modelcontextprotocol/sdk": "1.29.0"},
+  "devDependencies": {"@types/node": "24.12.2", "typescript": "5.9.3"}
+}

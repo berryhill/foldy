@@ -1,0 +1,1017 @@
+{
+  "source": "Foldy Runtime Transition workbook, rev_foldy_runtime_transition_v0_6_1_20260908",
+  "status": "requirements-not-implementation-proof",
+  "precedence": "Detailed approved decisions and acceptance supersede the stale resolvedQuestions statement deferring recovery and MCP authentication.",
+  "entries": {
+    "entry_foldy_mvi": {
+      "title": "Essential MVI",
+      "scope": {
+        "intent": "Define the complete minimum product contract for one owner to claim, deploy, connect, update, review, publish, protect, operate, back up, restore, upgrade, and safely retire one autonomous Foldy instance on Cynder.",
+        "audit": {
+          "deployToday": "The fork deploys a static HTML file set to Vercel or Cloudflare Pages. The provider union is exactly vercel-self | cloudflare-pages.",
+          "runtimePackagingToday": "The fork already has packaged/headless runtime assembly and Docker deployment documentation, so Cynder should consume a pinned runtime image rather than invent another renderer.",
+          "mcpToday": "The daemon already exposes one runtime-wide stdio MCP server and install information. It is not yet a per-Foldy, revision-bound product capability.",
+          "gap": "The fork provides local/static precursors, but it does not yet implement the complete Cynder instance, owner bootstrap, remote project-scoped MCP, review/publication, password gate, recoverability, hosting entitlement, upgrade, or teardown contract defined here.",
+          "repositoryBaseline": {
+            "repository": "foldy-opendesign",
+            "commit": "4b38da64f455d9656dc421f9dad7ff5ec4ec0ac8",
+            "observed": [
+              "Static deployment supports Vercel and Cloudflare Pages, not Cynder autonomous instances.",
+              "The existing MCP server is runtime-wide local stdio; /mcp and /mcp/manifest.json are not deployed project-scoped MCP endpoints.",
+              "Current MCP mutation exposes generic artifact creation rather than the Foldy update/review/publish state machine.",
+              "Current health proves process liveness, not instance identity, storage integrity, revision parity, or recoverability.",
+              "Current deletion is not the governed provider, credential, cache, and storage teardown required by this MVI."
+            ],
+            "truth": "CURRENT_VERIFIED_SOURCE_GAP"
+          }
+        },
+        "approvedDecisions": [
+          "Foldy Server is the deployment control plane and factory; it is not the day-to-day editing surface.",
+          "Every deployed Foldy is one autonomous project instance with its own UI, scoped MCP endpoint, durable content, and revision history.",
+          "The MVI has one authenticated, recoverable owner. Additional users, invitations, organizations, and ownership transfer are deferred.",
+          "The deploying principal claims the sealed instance through a one-use assertion; the first public visitor can never become owner.",
+          "People and their AI collaborate directly with the deployed instance; MCP clients default to read and may receive draft-write authority only.",
+          "Only the owner may approve or publish the exact frozen proposal, change access, issue credentials, restore, upgrade, or delete.",
+          "Publishing advances content without redeploying the runtime; runtime upgrades are separate, snapshot-backed operations.",
+          "Cynder deployment and renewal are idempotent, quote-bound, explicitly authorized, and never silently charge or activate.",
+          "Public browser access is the default and may be protected by one shared password; that password never grants owner or MCP authority.",
+          "One complete manual backup/restore path, honest partial-failure reporting, and a tested rollback source are required before MVI closure."
+        ],
+        "cynderDeploy": {
+          "userJob": "From Foldy Server, review the pinned runtime release, initial content revision, and cost boundary; authorize deployment; then receive an autonomous Foldy instance URL and deployment receipt.",
+          "minimumInputs": [
+            "projectId",
+            "workbookId",
+            "revisionId",
+            "releaseBundleDigest",
+            "imageDigest",
+            "resourceClass",
+            "publicPort",
+            "dataVolume",
+            "browserAccessMode",
+            "idempotencyKey",
+            "expectedPriorGeneration",
+            "quoteAuthorizationRef"
+          ],
+          "defaultProfile": {
+            "resourceClass": "mvi-small",
+            "publicPort": 8080,
+            "healthPath": "/api/health",
+            "dataMount": "/data",
+            "compatibilityAlias": "OD_DATA_DIR",
+            "browserAccessMode": "public"
+          },
+          "lifecycle": [
+            "Seal the complete release bundle and recursively verify every dependency",
+            "Resolve immutable runtime image digest and compatibility range",
+            "Preflight Cynder adapter, owner identity, readiness contract, and requested lease terms",
+            "Request an idempotent quote and review all paid, expiry, grace, and retention terms",
+            "Explicitly authorize the bounded deployment action",
+            "REGISTER_ARTIFACT and provision the autonomous instance with durable storage",
+            "Claim the SEALED instance as its single owner through a one-use protected assertion",
+            "Verify readiness, instance and revision identity, storage integrity, browser access mode, remote MCP discovery, and receipt",
+            "Activate the verified generation through compare-and-swap"
+          ],
+          "successProof": [
+            "stable instance ID and URL",
+            "Cynder artifact and deployment IDs",
+            "release bundle and runtime image digests",
+            "active generation",
+            "owner claim and READY transition receipt",
+            "liveness and readiness PASS",
+            "initial/current content revision parity",
+            "writable durable-volume integrity probe",
+            "remote MCP initialize/tools/read probe",
+            "lease terms and next owner action",
+            "rollback snapshot/source"
+          ],
+          "excludedFromMvi": [
+            "multi-region",
+            "autoscaling",
+            "custom domains",
+            "zero-downtime rolling upgrades",
+            "scheduled backup service",
+            "automatic unbounded renewal",
+            "background paid action without explicit bounded authorization"
+          ]
+        },
+        "projectMcp": {
+          "userJob": "From the deployed Foldy, choose GPT/ChatGPT, Claude Desktop, Claude Code, or a generic MCP client; authorize project-scoped access; test identity, protocol, authentication, and effective tools; then read or create an isolated update.",
+          "identityBinding": [
+            "instanceId",
+            "projectId",
+            "workbookId",
+            "observedRevisionId"
+          ],
+          "endpoint": "/mcp",
+          "transport": "HTTPS Streamable HTTP",
+          "tlsRequired": true,
+          "discovery": {
+            "manifest": "/mcp/manifest.json",
+            "protectedResourceMetadata": "/.well-known/oauth-protected-resource/mcp"
+          },
+          "authentication": {
+            "primary": "OAuth 2.1 authorization code with PKCE for hosted/browser-capable clients.",
+            "fallback": "One-time-display opaque project-scoped token for clients without OAuth; stored only as a verifier and revocable.",
+            "ownerUI": "List grant metadata and effective scopes; revoke one grant or all grants and terminate active sessions.",
+            "browserPasswordRejected": true
+          },
+          "scopes": {
+            "default": [
+              "foldy:read"
+            ],
+            "optionalClient": [
+              "foldy:draft:write"
+            ],
+            "ownerOnly": [
+              "foldy:review",
+              "foldy:approve",
+              "foldy:publish",
+              "foldy:admin"
+            ],
+            "toolVisibility": "Omit unauthorized tools from tools/list and independently enforce the same scope at tools/call."
+          },
+          "manifest": {
+            "schemaVersion": "foldy-mcp-manifest.v1",
+            "fields": [
+              "instanceId",
+              "projectId",
+              "workbookId",
+              "currentPublishedRevisionId",
+              "serverName",
+              "serverVersion",
+              "endpoint",
+              "transport",
+              "supportedProtocolVersions",
+              "authenticationDiscovery",
+              "capabilities",
+              "browserAccess.mode"
+            ],
+            "publicSafety": "Contains connection metadata only; never credentials, password/verifier material, grants, owner-only data, or project content."
+          },
+          "clientGuides": {
+            "ChatGPT": "Remote HTTPS connector using OAuth authorization and one safe read test.",
+            "Claude Desktop": "Tested remote HTTPS configuration followed by browser authorization.",
+            "Claude Code": "Remote HTTPS command/config; local stdio only when Foldy runs on the same machine.",
+            "Generic MCP": "Endpoint, transport, auth discovery, supported protocol, server identity, capability summary, safe read, disconnect, and revocation."
+          },
+          "readTools": [
+            "get_project",
+            "get_workbook",
+            "list_pages",
+            "get_page",
+            "list_files",
+            "get_file",
+            "search",
+            "list_updates",
+            "get_update",
+            "get_update_changes",
+            "get_update_preview",
+            "list_review_comments",
+            "get_readiness_checks",
+            "get_revision_history"
+          ],
+          "stateTools": [
+            "create_update",
+            "update_page",
+            "save_update_revision",
+            "submit_update_for_review",
+            "add_review_comment",
+            "resolve_review_comment",
+            "request_update_changes",
+            "close_update",
+            "approve_update_revision",
+            "publish_update"
+          ],
+          "toolContract": {
+            "mutationInputs": [
+              "projectId",
+              "updateId when applicable",
+              "expectedBaseRevisionId",
+              "expectedUpdateRevisionId when applicable",
+              "idempotencyKey",
+              "reason for decision/close/publish"
+            ],
+            "mutationResult": [
+              "projectId",
+              "updateId",
+              "priorState",
+              "currentState",
+              "updateRevisionId",
+              "currentPublishedRevisionId",
+              "receiptId",
+              "occurredAt"
+            ],
+            "schemaRule": "Unknown properties are rejected unless introduced by a versioned extension.",
+            "readConsistency": "Every read returns observedRevisionId and accepts optional atRevisionId; unavailable revisions fail instead of silently switching to current."
+          },
+          "protocolSession": {
+            "negotiation": "Manifest advertises tested protocol versions; initialize selects only a mutually supported version before any tool execution.",
+            "mode": "stateful",
+            "lifecycle": "Session ID is bound to grant and instance, expires, is revoked with the grant, and reconnects explicitly after server restart or capability change."
+          },
+          "errors": [
+            "AUTH_REQUIRED",
+            "AUTH_INVALID",
+            "AUTH_EXPIRED",
+            "AUTH_REVOKED",
+            "SCOPE_REQUIRED",
+            "PROJECT_MISMATCH",
+            "REVISION_CONFLICT",
+            "APPROVAL_STALE",
+            "REVIEW_REQUIRED",
+            "BLOCKING_COMMENTS",
+            "CHECKS_FAILED",
+            "UPDATE_CLOSED",
+            "PROTOCOL_VERSION_UNSUPPORTED",
+            "SESSION_INVALID",
+            "RATE_LIMITED",
+            "INTERNAL_ERROR"
+          ],
+          "errorShape": [
+            "code",
+            "safeMessage",
+            "retryable",
+            "requestId",
+            "remediation"
+          ],
+          "networkControls": [
+            "TLS only",
+            "trusted host/proxy rules",
+            "OAuth state and PKCE validation",
+            "per-instance and per-grant rate limits",
+            "request/body/output size limits",
+            "timeouts and cancellation",
+            "SSRF-safe discovery",
+            "sanitized audit logging"
+          ],
+          "excludedFromMvi": [
+            "agent-to-agent delegation",
+            "silent client configuration",
+            "WebSocket transport",
+            "legacy SSE transport",
+            "cross-instance search",
+            "marketplace discovery",
+            "enterprise identity federation"
+          ]
+        },
+        "surfaceMap": [
+          {
+            "surface": "Foldy Server deploy panel",
+            "purpose": "bundle preflight, quote, bounded authorization, lease terms, deployment, owner claim, activation, and receipt",
+            "intent": "recompose"
+          },
+          {
+            "surface": "Deployment, renewal, upgrade, recovery, and teardown receipts",
+            "purpose": "durable operation truth and recovery handles without secret material",
+            "intent": "create"
+          },
+          {
+            "surface": "Deployed Foldy owner claim",
+            "purpose": "move the sealed instance to ready under one authenticated owner",
+            "intent": "create"
+          },
+          {
+            "surface": "Deployed Foldy workspace",
+            "purpose": "instance-local content, update, review, publication, status, and recovery",
+            "intent": "create"
+          },
+          {
+            "surface": "Connect AI client",
+            "purpose": "client selection, discovery, authorization, effective scopes, test connection, disconnect, and revoke",
+            "intent": "create"
+          },
+          {
+            "surface": "/mcp, /mcp/manifest.json, and protected-resource metadata",
+            "purpose": "project-scoped remote MCP transport and interoperable discovery",
+            "intent": "create"
+          },
+          {
+            "surface": "Deployed Foldy unlock gate",
+            "purpose": "challenge unauthenticated viewers before protected bytes",
+            "intent": "create"
+          },
+          {
+            "surface": "Instance Access settings",
+            "purpose": "browser access plus owner-visible MCP grant administration",
+            "intent": "create"
+          },
+          {
+            "surface": "Owner status and diagnostics",
+            "purpose": "readiness, storage, lease, backup, revision, and operation truth",
+            "intent": "create"
+          },
+          {
+            "surface": "Backup, restore, upgrade, stop, and delete controls",
+            "purpose": "recover and retire the instance without hidden loss or false success",
+            "intent": "create"
+          },
+          {
+            "surface": "Existing transition page",
+            "purpose": "preserve temporary runtime migration guidance",
+            "intent": "preserve"
+          }
+        ],
+        "acceptance": [
+          "A newly deployed instance remains SEALED until the authenticated deploying principal claims it; no public visitor can become owner.",
+          "The same sealed release builds byte-identical manifests, and every declared dependency is hash-verified before registration.",
+          "Concurrent or retried deploy requests with the same idempotency key create one billable deployment and return one durable receipt.",
+          "Activation uses compare-and-swap and occurs only after owner claim, readiness, storage, route, MCP, and identity checks pass.",
+          "Paid deploy and renewal actions require explicit bounded authorization; accepted lease, expiry, grace, retention, and next-action terms are readable.",
+          "Each instance exposes structured MCP discovery and a real TLS Streamable HTTP endpoint rather than an HTML fallback.",
+          "ChatGPT, Claude Desktop, Claude Code, and one generic MCP client complete tested onboarding and a safe project-scoped read.",
+          "Missing, malformed, expired, wrong-project, wrong-audience, and revoked MCP credentials fail closed; browser-password grants are rejected.",
+          "New MCP grants expose only read tools. Draft-write does not grant approve, publish, access, credential, recovery, upgrade, or delete authority.",
+          "Every tool schema, UI adapter, manifest snapshot, and MCP tools/list description is versioned and agrees exactly.",
+          "AI clients may create and revise isolated updates; only the owner may approve and publish the exact frozen proposal.",
+          "Material edits invalidate prior approval, and concurrent publication cannot overwrite a newer published revision.",
+          "Public browser access remains the default; password_required is opt-in and at most one shared viewer password is active.",
+          "Password protection is enforced before serving or caching any workbook-derived public bytes and never authenticates owner or MCP actions.",
+          "Password, verifier, token, grant, owner assertion, session, and secret-derived values are absent from source, revisions, HTML, URLs, logs, traces, analytics, receipts, instructions, exports, and diagnostics.",
+          "A consistent secret-free manual backup restores identity, lineage, published pointer, updates, reviews, checks, and receipts to a compatible fresh runtime.",
+          "Runtime upgrade requires compatibility proof and a recovery snapshot; failed verification restores prior image and data.",
+          "Stop is reversible; delete is separately confirmed, idempotent, and reports traffic, workload, credential, cache, artifact, and volume outcomes without false success.",
+          "Owner status distinguishes public liveness from authenticated readiness and exposes actionable correlation IDs without secrets.",
+          "The complete golden path passes browser, MCP, security, accessibility, restore, upgrade, and teardown evidence against one deployed instance."
+        ],
+        "openQuestions": [
+          "Which Cynder signer and owner-facing quote component should implement the approved bounded authorization contract?",
+          "Which approved verifier/refresh-grant store and server-held pepper custody should the deployed runtime use?",
+          "Which concrete MCP protocol versions will the first runtime advertise after client compatibility testing?"
+        ],
+        "architecture": {
+          "model": "central-control-plane-with-autonomous-deployed-instances",
+          "foldyServer": {
+            "role": "Central deployment control plane and factory.",
+            "responsibilities": [
+              "Package and deploy Foldy instances.",
+              "Run Cynder preflight, quote, authorization, deployment, verification, and receipt capture.",
+              "Locate instances and orchestrate explicit runtime upgrades."
+            ],
+            "nonResponsibilities": [
+              "Host project editing.",
+              "Broker routine collaboration.",
+              "Publish instance content."
+            ],
+            "collaborationBoundary": "Humans and their AI do not edit, review, or publish Foldy content on Foldy Server."
+          },
+          "deployedInstance": {
+            "role": "Autonomous, project-scoped Foldy runtime deployed to Cynder.",
+            "responsibilities": [
+              "Serve the project UI and project-scoped MCP endpoint.",
+              "Store durable content, working copies, revision history, reviews, and receipts.",
+              "Host human-and-AI collaboration and publish approved content revisions."
+            ],
+            "collaborationBoundary": "People and their AI work on the deployed Foldy instance, not on Foldy Server."
+          },
+          "relationship": "Foldy Server deploys and upgrades the instance; people and AI collaborate directly with the instance."
+        },
+        "lifecycles": {
+          "deployment": {
+            "owner": "Foldy Server",
+            "job": "Create an autonomous instance from a pinned runtime image and initial content revision.",
+            "durableResult": "Cynder deployment receipt, stable instance identity, URL, storage, and runtime image digest."
+          },
+          "contentPublication": {
+            "owner": "Deployed Foldy instance",
+            "job": "Advance the instance current content revision after review and approval.",
+            "durableResult": "Publication receipt and immutable content revision lineage.",
+            "deploymentEffect": "No Cynder redeployment and no runtime-image change."
+          },
+          "runtimeUpgrade": {
+            "owner": "Foldy Server",
+            "job": "Replace the runtime image through an explicit upgrade operation.",
+            "durableResult": "Upgrade receipt and new image digest while preserving instance identity, durable data, and content history."
+          }
+        },
+        "resolvedQuestions": [
+          {
+            "question": "Is the first Cynder target a single-tenant runtime per Foldy or a shared runtime with isolated project volumes?",
+            "resolution": "The first target is one autonomous deployed Foldy instance per Foldy, created and managed by Foldy Server; collaboration does not run on the central server."
+          },
+          {
+            "question": "What authentication mode should protect a public Foldy in the first MVI?",
+            "resolution": "Offer one opt-in shared browser password per deployed Foldy. Public remains the default; accounts, roles, recovery, encryption, and MCP authentication are deferred."
+          }
+        ],
+        "passwordProtection": {
+          "feature": "opt_in_single_shared_password",
+          "userJob": "Keep a deployed Foldy public by default or require one shared password before its workbook-derived browser and unauthenticated public HTTP surfaces can be viewed.",
+          "modes": [
+            "public",
+            "password_required"
+          ],
+          "defaultMode": "public",
+          "singlePasswordLimit": "At most one active shared browser password per deployed Foldy instance.",
+          "securityBoundary": [
+            "The password proves knowledge of one shared secret; it does not establish a named identity.",
+            "Unlock grants only the instance capabilities already available through its public policy.",
+            "Possessing the shared password never grants owner, deployment, credential, review, publication, backup/restore, upgrade, deletion, or MCP authority.",
+            "Protection cannot recall content copied, downloaded, indexed, or distributed before enablement."
+          ],
+          "authority": {
+            "configure": "Only an authenticated instance owner or explicitly authorized administrator may enable, replace, or disable password protection.",
+            "unlock": "An anonymous visitor may submit the password only through the dedicated TLS-protected unlock exchange.",
+            "recovery": "The password is never readable or recoverable; an authorized owner may replace or remove it without knowing the prior password."
+          },
+          "coverage": {
+            "protected": [
+              "entry page and every workbook route or alias",
+              "workbook-derived HTML, JSON, metadata, assets, attachments, comments, history, revisions, previews, embeds, exports, print/download routes, streams, and public read APIs",
+              "provider-controlled caches, object delivery paths, search/index feeds, thumbnails, and unfurl metadata derived from the Foldy"
+            ],
+            "publicWithoutUnlock": [
+              "generic unlock shell with no protected workbook content",
+              "non-workbook-specific static product assets",
+              "generic access-required and support responses"
+            ],
+            "mcpBoundary": "MCP is not unlocked by the shared browser password and continues to require separate project-scoped credentials.",
+            "enforcement": "Authorize before serving or caching protected bytes; a client-side overlay is not an access control."
+          },
+          "secretCustody": {
+            "input": "Accept only over TLS through a dedicated redacted credential field; never place the password in a URL, source revision, generated HTML, MCP argument, command line, receipt, trace, analytics event, or log.",
+            "storage": "Store no plaintext or reversible password. Store only a unique-salt Argon2id verifier through approved server-side secret custody; an optional provider-held pepper remains separate.",
+            "policy": {
+              "minimumCharacters": 12,
+              "maximumCharacters": 128,
+              "normalization": "exact UTF-8 input with no implicit trim or Unicode normalization"
+            }
+          },
+          "unlockSession": {
+            "grant": "Issue a high-entropy opaque grant scoped to instance/workbook identity and protectionVersion.",
+            "browserStorage": "Secure, HttpOnly, SameSite cookie with the narrowest practical path/domain scope; never localStorage, sessionStorage, markup, or URL.",
+            "expiry": {
+              "idleMinutes": 30,
+              "absoluteHours": 12,
+              "rememberDevice": false
+            },
+            "revocation": "Logout revokes the current grant; password replacement, removal, and subsequent re-enable invalidate every prior shared-password grant."
+          },
+          "failurePolicy": {
+            "wrongPassword": "Return one generic failure with no hint, prefix, verifier, encoding, or password-history detail.",
+            "rateLimit": "After five failed attempts per source and instance in fifteen minutes, apply exponential delay capped at fifteen minutes; also enforce broader source limits without permanent instance-wide lockout.",
+            "dependencyFailure": "If protection state, verifier service, or mandatory cache invalidation is unavailable, fail closed and do not serve protected content."
+          },
+          "stateTransitions": {
+            "enable": "Validate owner authority and password policy, create the verifier, atomically set password_required with a new protectionVersion, invalidate public caches, then acknowledge success.",
+            "replace": "Atomically install a new verifier, increment protectionVersion, reject the old password, and revoke all prior shared-password grants.",
+            "disable": "Require owner authority and explicit confirmation, atomically restore the underlying public policy, increment protectionVersion, revoke all grants, and delete the active verifier."
+          },
+          "receipts": {
+            "record": [
+              "operation",
+              "instance/workbook reference",
+              "resulting access mode",
+              "protectionVersion",
+              "authorized actor reference",
+              "effective timestamp",
+              "grant revocation result",
+              "cache invalidation result"
+            ],
+            "prohibit": [
+              "password content",
+              "verifier/hash/salt/pepper material",
+              "grant values",
+              "secret-derived identifiers",
+              "password length or composition"
+            ]
+          },
+          "nonGoals": [
+            "additional user accounts",
+            "multi-user roles",
+            "per-person viewer permissions",
+            "password recovery",
+            "content encryption",
+            "MCP authentication"
+          ]
+        },
+        "actorModel": {
+          "owner": {
+            "cardinality": 1,
+            "authority": [
+              "approve",
+              "request_changes",
+              "publish",
+              "close_update",
+              "configure_browser_access",
+              "issue_and_revoke_mcp_grants",
+              "backup",
+              "restore",
+              "upgrade_runtime",
+              "stop_instance",
+              "delete_instance"
+            ],
+            "authentication": "Owner session established through one-use deployment bootstrap or Foldy Server/Cynder-signed recovery reset."
+          },
+          "mcpClient": {
+            "authority": [
+              "read",
+              "draft_write_if_explicitly_granted"
+            ],
+            "forbidden": [
+              "approve",
+              "publish",
+              "configure_access",
+              "administer_credentials",
+              "backup",
+              "restore",
+              "upgrade",
+              "delete"
+            ]
+          },
+          "viewer": {
+            "authority": [
+              "public_read_after_required_unlock"
+            ],
+            "forbidden": [
+              "mutation",
+              "owner_actions",
+              "mcp_authentication"
+            ]
+          },
+          "deferred": [
+            "additional owners",
+            "teams",
+            "invitations",
+            "organization accounts",
+            "ownership transfer",
+            "SSO",
+            "general RBAC"
+          ]
+        },
+        "ownerBootstrap": {
+          "initialState": "SEALED",
+          "claim": "The authenticated deploying principal receives a one-use instance-bound claim assertion through protected custody; it expires within fifteen minutes and is replay-safe.",
+          "readyTransition": "Successful claim creates a Secure, HttpOnly, SameSite owner session and atomically moves SEALED to READY before public access or MCP is enabled.",
+          "recovery": "Foldy Server may issue a Cynder-signed reset for the same instance identity. Recovery revokes owner sessions and MCP grants while preserving content, revisions, reviews, receipts, deployment ID, and image digest.",
+          "forbidden": [
+            "first visitor becomes owner",
+            "claim assertion in URL",
+            "claim assertion in workbook or HTML",
+            "shared browser password used as owner authentication"
+          ]
+        },
+        "releaseBundle": {
+          "schemaVersion": "foldy-release-bundle.v1",
+          "identity": [
+            "instanceId",
+            "projectId",
+            "workbookId",
+            "revisionId",
+            "runtimeImageDigest"
+          ],
+          "members": [
+            "path",
+            "mediaType",
+            "bytes",
+            "sha256",
+            "executableMode"
+          ],
+          "dependencyClosure": [
+            "HTML references",
+            "JavaScript imports",
+            "CSS imports and url()",
+            "images",
+            "fonts",
+            "generated assets",
+            "approved immutable external dependencies"
+          ],
+          "invariants": [
+            "Member order and aggregate digest are deterministic.",
+            "Missing, undeclared, mutable, path-escaping, or hash-mismatched dependencies fail before artifact registration.",
+            "The same sealed revision builds byte-identical manifests and aggregate digests."
+          ]
+        },
+        "deploymentOperation": {
+          "idempotency": "One owner-supplied idempotency key is bound to the complete deployment input digest; replay returns the original operation and receipt, while changed input with the same key is rejected.",
+          "states": [
+            "PREFLIGHT",
+            "QUOTED",
+            "AUTHORIZED",
+            "REGISTERING",
+            "PROVISIONING",
+            "VERIFYING",
+            "ACTIVE",
+            "FAILED",
+            "PARTIAL_FAILURE"
+          ],
+          "activation": "Compare-and-swap from the expected prior generation to one fully verified candidate. A failed or conflicting candidate never moves the active pointer.",
+          "receipt": [
+            "requestId",
+            "inputDigest",
+            "quoteRef",
+            "authorizationRef",
+            "artifactId",
+            "deploymentId",
+            "instanceId",
+            "bundleDigest",
+            "imageDigest",
+            "storageIdentity",
+            "activeGeneration",
+            "verificationResults",
+            "timestamps",
+            "providerEvidenceRef"
+          ],
+          "reconciliation": "If the provider succeeds but the client response or receipt write fails, read provider state and reconcile the same operation before any retry."
+        },
+        "serviceEntitlement": {
+          "model": "quote_bound_prepaid_renewable_lease",
+          "terms": [
+            "resource profile",
+            "price and currency/asset",
+            "startsAt",
+            "renewBy",
+            "expiresAt",
+            "graceUntil",
+            "dataRetentionUntil"
+          ],
+          "renewal": "Every renewal requires an explicit bounded authorization or a separately recorded capped renewal authority. No silent or unbounded charge is allowed.",
+          "expiry": "Expiry stops billable compute and public/MCP traffic according to the accepted quote; retained data remains exportable only through owner recovery during the quoted retention window.",
+          "deletionBoundary": "Expiry or suspension never silently deletes data. Destructive deletion requires a separate owner-confirmed teardown operation."
+        },
+        "recoverability": {
+          "backup": {
+            "mode": "manual_owner_triggered",
+            "consistency": "Acquire the project write lock and create a consistent SQLite snapshot; copying app.sqlite while WAL is active is not accepted.",
+            "includes": [
+              "project/workbook files",
+              "immutable revisions and published pointer",
+              "update drafts",
+              "comments",
+              "approvals",
+              "checks",
+              "receipts",
+              "instance metadata",
+              "schema/runtime compatibility manifest",
+              "per-member checksums"
+            ],
+            "excludes": [
+              "plaintext credentials",
+              "browser grants",
+              "MCP token values",
+              "provider secrets",
+              "password input",
+              "pepper",
+              "reusable owner session"
+            ]
+          },
+          "restore": "Validate every checksum and schema/runtime compatibility before mutation. Restore preserves identity, lineage, reviews, receipts, and published pointer while issuing new owner/MCP/browser sessions.",
+          "passwordAfterRestore": "If verifier custody cannot be restored safely, remain SEALED until the owner replaces the password or explicitly returns to public mode.",
+          "proof": "Publish a known revision, back up, destroy the test instance, restore to a compatible fresh runtime, prove byte/revision parity, then complete a new update and publication."
+        },
+        "runtimeUpgrade": {
+          "preflight": [
+            "current and candidate image digests",
+            "data schema version",
+            "workbook schema version",
+            "supported version ranges",
+            "verified recovery snapshot"
+          ],
+          "operation": "Lock publication, stage migration against copy-on-write data, verify readiness/identity/revisions/reviews/MCP/access mode, then CAS-activate the new image.",
+          "rollback": "Failed verification restores the prior image and pre-upgrade snapshot. Irreversible migrations require explicit warning, successful export, and forward-recovery plan before authorization.",
+          "receipt": [
+            "old/new image digests",
+            "schema before/after",
+            "snapshotId",
+            "checks",
+            "activation result",
+            "rollback result",
+            "timestamp"
+          ]
+        },
+        "instanceLifecycle": {
+          "stop": "Reversible suspension of compute/traffic while data is retained under accepted lease terms.",
+          "closeUpdate": "Abandon a working update without deleting published immutable revisions or its audit trail.",
+          "deleteInstance": {
+            "confirmation": "Active owner session, exact instance-name confirmation, final verified-backup offer, and explicit skip-backup record if declined.",
+            "blockedWhile": [
+              "backup",
+              "restore",
+              "publication",
+              "upgrade"
+            ],
+            "steps": [
+              "remove traffic",
+              "stop workload",
+              "revoke owner/MCP/browser credentials and sessions",
+              "invalidate caches",
+              "delete provider workload/artifact as authorized",
+              "delete volume according to confirmed policy",
+              "write non-secret tombstone receipt"
+            ],
+            "failure": "Report each step and PARTIAL_FAILURE with recovery instructions; never return false success.",
+            "idempotent": true
+          }
+        },
+        "ownerOperations": {
+          "status": [
+            "runtime version and image digest",
+            "instance/workbook IDs",
+            "current published revision",
+            "browser access mode",
+            "storage writable/healthy",
+            "lease/expiry state",
+            "last successful backup",
+            "latest failed operation and correlation ID"
+          ],
+          "healthBoundary": "Public liveness reveals no workbook metadata or secrets. Authenticated readiness verifies identity, revision, schema, storage, dependencies, and MCP discovery.",
+          "diagnostics": "Owner may download a redacted bundle of versions, status, receipts, and bounded errors; it excludes content and all credential, verifier, grant, password, and MCP-argument material."
+        },
+        "accessibility": {
+          "standard": "WCAG 2.2 AA",
+          "required": [
+            "keyboard operation and visible focus",
+            "dialog focus trap and restoration",
+            "ARIA-live error summaries",
+            "review states not conveyed by color alone",
+            "semantic headings/landmarks/reading order",
+            "persistent password labels and paste/password-manager support",
+            "reduced motion",
+            "target-size and contrast compliance"
+          ],
+          "proof": [
+            "automated axe checks",
+            "keyboard-only owner golden-path smoke",
+            "desktop and 390px responsive interaction"
+          ]
+        },
+        "goldenPath": [
+          "Seal one complete deterministic Foldy release bundle.",
+          "Quote and explicitly authorize one idempotent Cynder deployment and lease.",
+          "Deploy, claim the SEALED instance as owner, verify readiness, and CAS-activate it.",
+          "Open the exact entry URL and every declared route.",
+          "Connect ChatGPT, Claude Desktop, Claude Code, and one generic MCP client from generated guidance.",
+          "Verify discovery, protocol negotiation, project identity, effective scopes, and one safe read.",
+          "Grant one client draft-write authority and create an isolated update.",
+          "Inspect the same update in the visual review surface, revise it, and observe stale approval behavior.",
+          "Approve and publish the exact frozen update as owner through the shared domain contract.",
+          "Verify current-pointer, rendered-byte, runtime, UI/MCP, and receipt parity.",
+          "Enable one shared browser password and prove public/API/cache denial while MCP credentials remain separate.",
+          "Replace/remove the password and prove prior viewer sessions are revoked.",
+          "Back up, destroy the test instance, restore it, and complete another update/publication.",
+          "Upgrade with snapshot-backed rollback proof.",
+          "Stop and delete a test instance with honest provider/credential/cache/storage teardown receipts."
+        ]
+      }
+    },
+    "entry_update_review": {
+      "title": "Updates & Review",
+      "workflow": {
+        "intent": "On each deployed Foldy instance, let people and their AI propose page changes while the single instance owner reviews, approves, and publishes the exact frozen content revision—without Git vocabulary or runtime redeployment.",
+        "language": {
+          "draft": "Update draft",
+          "pullRequest": "Review request",
+          "diff": "Changes",
+          "merge": "Publish update",
+          "branch": "Working copy",
+          "commit": "Saved revision",
+          "checks": "Readiness checks"
+        },
+        "states": [
+          "Draft",
+          "Ready for review",
+          "Changes requested",
+          "Approved",
+          "Published",
+          "Closed"
+        ],
+        "userFlow": [
+          {
+            "step": "01",
+            "name": "Start an update",
+            "detail": "Choose one or more pages, name the intent, and create an isolated working copy from the current published revision."
+          },
+          {
+            "step": "02",
+            "name": "Make changes",
+            "detail": "Edit through an MCP-connected assistant or client. Every mutation creates a recoverable saved revision and preview."
+          },
+          {
+            "step": "03",
+            "name": "Request review",
+            "detail": "Freeze the proposed version, summarize affected pages, and open the owner review decision."
+          },
+          {
+            "step": "04",
+            "name": "Review changes",
+            "detail": "See page-by-page additions, removals, and edits in readable prose—not source-code syntax. Comment on a page, block, field, or selection."
+          },
+          {
+            "step": "05",
+            "name": "Resolve feedback",
+            "detail": "New changes update the proposal while preserving the prior review trail. Material edits make prior approvals stale."
+          },
+          {
+            "step": "06",
+            "name": "Publish update",
+            "detail": "After required approvals and readiness checks pass, advance the current Foldy pointer with compare-and-swap protection."
+          }
+        ],
+        "reviewSurface": {
+          "leftRail": [
+            "Overview",
+            "Changed pages",
+            "Conversation",
+            "Readiness checks",
+            "Revision history"
+          ],
+          "changeViews": [
+            "Readable summary",
+            "Inline changes",
+            "Before / after",
+            "Rendered preview"
+          ],
+          "pageStates": [
+            "Added",
+            "Edited",
+            "Moved",
+            "Renamed",
+            "Removed",
+            "Unchanged"
+          ],
+          "commentTargets": [
+            "whole update",
+            "page",
+            "block",
+            "field",
+            "text selection"
+          ],
+          "primaryActions": [
+            "Request review",
+            "Approve",
+            "Request changes",
+            "Publish update",
+            "Close update"
+          ]
+        },
+        "authority": {
+          "owner": "May comment, request changes, approve one exact frozen update revision, publish after readiness/CAS checks, close updates, and restore prior content through a new governed revision.",
+          "mcpClientRead": "May inspect published content, updates, changes, previews, comments, checks, and history only.",
+          "mcpClientDraftWriter": "May create and revise an isolated update and submit it for owner review; cannot approve, publish, restore, administer access, upgrade, or delete.",
+          "system": "Binds every action to actor/grant/session references, invalidates stale approval, blocks conflicts, preserves history, and emits non-secret receipts."
+        },
+        "mcpOnly": {
+          "principle": "For the first version, the deployed instance MCP endpoint is the complete functional API. The visual review surface on that same instance invokes the same contracts and owns no hidden or central-server write path.",
+          "resources": [
+            "foldy://updates",
+            "foldy://updates/{updateId}",
+            "foldy://updates/{updateId}/changes",
+            "foldy://updates/{updateId}/comments",
+            "foldy://updates/{updateId}/checks"
+          ],
+          "readTools": [
+            "list_updates",
+            "get_update",
+            "get_update_changes",
+            "get_update_preview",
+            "list_review_comments",
+            "get_readiness_checks",
+            "get_revision_history"
+          ],
+          "writeTools": [
+            "create_update",
+            "update_page",
+            "save_update_revision",
+            "submit_update_for_review",
+            "add_review_comment",
+            "resolve_review_comment",
+            "request_update_changes",
+            "close_update",
+            "approve_update_revision",
+            "publish_update"
+          ],
+          "events": [
+            "update.created",
+            "revision.saved",
+            "review.requested",
+            "comment.added",
+            "approval.changed",
+            "checks.changed",
+            "update.published",
+            "update.closed"
+          ],
+          "toolContract": {
+            "mutationInputs": [
+              "projectId",
+              "updateId when applicable",
+              "expectedBaseRevisionId",
+              "expectedUpdateRevisionId when applicable",
+              "idempotencyKey",
+              "reason for decision/close/publish"
+            ],
+            "mutationResult": [
+              "projectId",
+              "updateId",
+              "priorState",
+              "currentState",
+              "updateRevisionId",
+              "currentPublishedRevisionId",
+              "receiptId",
+              "occurredAt"
+            ],
+            "schemaRule": "Unknown properties are rejected unless introduced by a versioned extension.",
+            "readConsistency": "Every read returns observedRevisionId and accepts optional atRevisionId; unavailable revisions fail instead of silently switching to current."
+          }
+        },
+        "mergeContract": {
+          "preconditions": [
+            "proposal is based on the current published revision or has been explicitly refreshed",
+            "the instance owner approved this exact frozen proposal revision",
+            "all readiness checks pass",
+            "no unresolved blocking comments",
+            "protected pages and fields are unchanged unless specifically authorized"
+          ],
+          "transaction": [
+            "lock the Foldy project",
+            "revalidate current and proposal identities",
+            "freeze the proposal bundle",
+            "advance currentRevisionId with compare-and-swap",
+            "emit publication receipt",
+            "leave the proposal immutable"
+          ],
+          "failureBehavior": [
+            "never partially publish",
+            "return a readable conflict or stale-review reason",
+            "preserve the proposal and conversation",
+            "offer Refresh proposal rather than exposing rebase terminology"
+          ]
+        },
+        "acceptance": [
+          "A non-technical owner can understand what will change before publishing.",
+          "AI clients may create and revise an isolated update but cannot approve or publish it.",
+          "Owner approval binds one immutable proposal revision and becomes stale after material edits.",
+          "Every visible action maps to the same documented domain tool and receipt contract; authority differs by session/grant, not by hidden UI endpoints.",
+          "Concurrent publication cannot overwrite a newer current revision.",
+          "Published history, comments, checks, actor references, and receipts remain recoverable without credential values.",
+          "The interface never requires branch, commit, pull request, rebase, or merge terminology."
+        ],
+        "deferred": [
+          "visual page editor inside Foldy",
+          "email or chat notifications",
+          "multi-workbook change sets",
+          "automatic conflict resolution",
+          "GitHub synchronization"
+        ],
+        "deploymentBoundary": {
+          "collaborationRuntime": "Working copies, review requests, comments, approvals, readiness checks, and publication all belong to the deployed Foldy instance.",
+          "contentPublish": "Publish update advances the instance current content revision; it does not redeploy the instance.",
+          "runtimeUpgrade": "Changing Foldy runtime or image version uses a separate Foldy Server-controlled upgrade operation and receipt."
+        },
+        "actorModel": {
+          "owner": {
+            "cardinality": 1,
+            "authority": [
+              "approve",
+              "request_changes",
+              "publish",
+              "close_update",
+              "configure_browser_access",
+              "issue_and_revoke_mcp_grants",
+              "backup",
+              "restore",
+              "upgrade_runtime",
+              "stop_instance",
+              "delete_instance"
+            ],
+            "authentication": "Owner session established through one-use deployment bootstrap or Foldy Server/Cynder-signed recovery reset."
+          },
+          "mcpClient": {
+            "authority": [
+              "read",
+              "draft_write_if_explicitly_granted"
+            ],
+            "forbidden": [
+              "approve",
+              "publish",
+              "configure_access",
+              "administer_credentials",
+              "backup",
+              "restore",
+              "upgrade",
+              "delete"
+            ]
+          },
+          "viewer": {
+            "authority": [
+              "public_read_after_required_unlock"
+            ],
+            "forbidden": [
+              "mutation",
+              "owner_actions",
+              "mcp_authentication"
+            ]
+          },
+          "deferred": [
+            "additional owners",
+            "teams",
+            "invitations",
+            "organization accounts",
+            "ownership transfer",
+            "SSO",
+            "general RBAC"
+          ]
+        }
+      }
+    }
+  }
+}
