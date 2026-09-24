@@ -1,24 +1,26 @@
-import { createHash, randomBytes } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import type { Express, Request, Response } from 'express';
 import type { BrowserPasswordAccess } from '../foldy-access/browser-password.js';
 import type { NativeDeploymentService, DeploymentOwner, NativeDeploymentApproval } from '../foldy-deployments/native-deployment-service.js';
 import type { NativeDeploymentPrepareResponse } from '@open-design/contracts';
-export function nativeDeploymentOwner(access: BrowserPasswordAccess, req: Request): DeploymentOwner {
+export async function nativeDeploymentOwner(
+  access: BrowserPasswordAccess, req: Request,
+  resolveOwner?: (request: Request) => Promise<DeploymentOwner>,
+): Promise<DeploymentOwner> {
   if (!access.isAdministrativeRequest(req)) throw new Error('FOLDY_ORIGIN_DENIED');
-  if (!access.status(req).enabled || !access.isAuthorized(req)) throw new Error('FOLDY_SESSION_REQUIRED');
-  const cookie = /(?:^|;\s*)foldy_browser_session=([^;]+)/.exec(req.get('cookie') ?? '')?.[1];
-  if (!cookie) throw new Error('FOLDY_SESSION_REQUIRED');
-  return { principalId: 'local-admin', sessionId: createHash('sha256').update(cookie).digest('hex') };
+  if (!resolveOwner) throw new Error('FOLDY_OWNER_NOT_CONFIGURED');
+  return resolveOwner(req);
 }
 export function registerNativeDeploymentRoutes(app: Express, deps: {
-  access: BrowserPasswordAccess; service?: NativeDeploymentService<Request>; now?: () => number;
+  access: BrowserPasswordAccess; service?: NativeDeploymentService<Request>;
+  resolveOwner?: (request: Request) => Promise<DeploymentOwner>; now?: () => number;
 }): void {
   const receipts = new Map<string, { session: string; csrf: string; expires: number; approval: NativeDeploymentApproval }>();
   const now = deps.now ?? Date.now;
   const wrap = (fn: (req: Request, owner: DeploymentOwner) => Promise<unknown>) => async (req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');
     try {
-      const owner = nativeDeploymentOwner(deps.access, req);
+      const owner = await nativeDeploymentOwner(deps.access, req, deps.resolveOwner);
       if (!deps.service) { res.status(503).json({ error: { code: 'FOLDY_HOSTING_NOT_CONFIGURED' } }); return; }
       res.json(await fn(req, owner));
     } catch (e) {

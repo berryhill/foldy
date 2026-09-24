@@ -36,6 +36,15 @@ const flags = () => ['--daemon-url', origin, '--credential-file', join(root, 'se
 test('help succeeds without credentials or network', async () => {
   const result = await run(['--help']); expect(result.code).toBe(0); expect(result.output).toContain('Usage: od native-deployment'); expect(requests).toHaveLength(0);
 });
+test('top-level od preserves a native deployment failure exit code', async () => {
+  const result = await new Promise<{ code: number | null; output: string }>(resolve => {
+    execFile(process.execPath, ['--import', 'tsx', 'src/cli.ts', 'native-deployment', '--bogus'],
+      { cwd: process.cwd(), timeout: 10000 }, (error, stdout, stderr) =>
+        resolve({ code: error && 'code' in error && typeof error.code === 'number' ? error.code : 0, output: stdout + stderr }));
+  });
+  expect(result.output).toContain('FOLDY_CLI_REQUEST_FAILED');
+  expect(result.code).toBe(1);
+});
 test('all commands use shared HTTP routes and prompt-file stdin', async () => {
   for (const command of ['prepare', 'execute', 'inspect', 'reconcile']) {
     const args = [command, ...flags()];
