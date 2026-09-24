@@ -3,6 +3,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
 
 const digest = (text: string) => createHash('sha256').update(text).digest('hex');
@@ -11,9 +12,7 @@ const runtime = resolve('../apps/foldy-runtime');
 test('owner understands changed pages and text before inspecting isolated previews', async ({ page, context }) => {
   const unexpected: string[] = [];
   page.on('request', request => { if (request.url().startsWith('https://evil.invalid/')) unexpected.push(request.url()); });
-  const scratch = resolve('../.tmp');
-  mkdirSync(scratch, { recursive: true });
-  const dir = mkdtempSync(join(scratch, 'foldy-review-'));
+  const dir = mkdtempSync(join(tmpdir(), 'foldy-review-'));
   let child: ChildProcess | undefined;
   try {
     const bundle = join(dir, 'bundle');
