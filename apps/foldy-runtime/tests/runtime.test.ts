@@ -6,6 +6,8 @@ import { join, resolve } from 'node:path';
 import { createHash, randomBytes } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
+import { runInNewContext } from 'node:vm';
+import { ownerScript } from '../dist/owner-ui.js';
 const hash = (v: string | Buffer) => createHash('sha256').update(v).digest('hex');
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'foldy-runtime-'));
@@ -70,6 +72,58 @@ test('sealed bootstrap, owner/viewer/MCP separation, real protocol, immutable by
  writeFileSync(join(f.bundle,'index.html'),'<!doctype html><h1>Immutable Foldy</h1>');
  p=await launch(f); assert.equal((await post(p.url+'/api/claim',{assertion:f.assertion})).status,409);
  } finally {p?.child.kill();rmSync(f.root,{recursive:true,force:true});}
+});
+test('versioned public tool snapshot matches effective read/draft tools and owner operation contract',async()=>{
+ const f=fixture();let p:Awaited<ReturnType<typeof launch>>|undefined;
+ try{
+  p=await launch(f);const origin=p.url;
+  const claim=await post(origin+'/api/claim',{assertion:f.assertion});const owner={cookie:claim.headers.get('set-cookie')!.split(';')[0],origin};
+  const manifest=await (await fetch(origin+'/mcp/manifest.json')).json();
+  assert.equal(manifest.toolContractVersion,'foldy-tool-contract.v1');
+  assert.ok(Array.isArray(manifest.capabilities.toolSchemas));
+  assert.deepEqual(manifest.capabilities.tools,manifest.capabilities.toolSchemas.map((tool:any)=>tool.name));
+  assert.ok(manifest.capabilities.toolSchemas.every((tool:any)=>!['approve_update_revision','publish_update','close_update'].includes(tool.name)));
+  assert.ok(!JSON.stringify(manifest).includes(f.assertion));
+  const effective=async(scopes:string[])=>{
+   const grant=await (await post(origin+'/api/mcp-grants',{scopes},owner)).json();
+   const auth={authorization:`Bearer ${grant.token}`,accept:'application/json, text/event-stream'};
+   const init=await post(origin+'/mcp',{jsonrpc:'2.0',id:1,method:'initialize',params:{protocolVersion:'2025-03-26',capabilities:{},clientInfo:{name:'parity',version:'1'}}},auth);
+   const headers={...auth,'mcp-session-id':init.headers.get('mcp-session-id')!,'mcp-protocol-version':'2025-03-26'};
+   await post(origin+'/mcp',{jsonrpc:'2.0',method:'notifications/initialized'},headers);
+   const response=await post(origin+'/mcp',{jsonrpc:'2.0',id:2,method:'tools/list'},headers);
+   assert.equal(response.status,200);return (await response.json()).result.tools;
+  };
+  const read=await effective(['foldy:read']),draft=await effective(['foldy:read','foldy:draft:write']);
+  assert.deepEqual(draft,manifest.capabilities.toolSchemas);
+  assert.deepEqual(read,manifest.capabilities.toolSchemas.filter((tool:any)=>!manifest.capabilities.draftTools.includes(tool.name)));
+  assert.deepEqual(manifest.capabilities.draftTools,['refresh_update_proposal','create_update','create_page','remove_page','move_page','update_page','save_update_revision','submit_update_for_review']);
+  assert.deepEqual(draft.find((tool:any)=>tool.name==='create_update').inputSchema.required,['projectId','expectedBaseRevisionId','idempotencyKey','title']);
+  assert.deepEqual(read.find((tool:any)=>tool.name==='get_file').inputSchema.required,['path']);
+  const contractResponse=await fetch(origin+'/api/operations/contract',{headers:owner});assert.equal(contractResponse.status,200);
+  const contract=await contractResponse.json();assert.equal(contract.schemaVersion,manifest.toolContractVersion);
+  assert.deepEqual(contract.readTools,manifest.capabilities.readTools);
+  assert.deepEqual(read.map((tool:any)=>tool.name),contract.readTools);
+  assert.deepEqual(contract.tools.filter((tool:any)=>manifest.capabilities.tools.includes(tool.name)),draft);
+  assert.ok(contract.tools.some((tool:any)=>tool.name==='publish_update'));
+  assert.equal((await fetch(origin+'/api/operations/contract')).status,401);
+  const requests:string[]=[];
+  const script=ownerScript.slice(0,ownerScript.indexOf('const messages='))+'\nglobalThis.invoke=op;';
+  const context={document:{querySelector:()=>({})},fetch:(path:string,options:RequestInit)=>{requests.push(path);return fetch(origin+path,{...options,headers:{...options.headers,cookie:owner.cookie,origin}});}} as {document:object;fetch:(path:string,options:RequestInit)=>Promise<Response>;invoke:(name:string,args?:Record<string,unknown>)=>Promise<any>};
+  runInNewContext(script,context);
+  const adapter=context;
+  const listed=await adapter.invoke('list_updates');assert.ok(Array.isArray(listed.value));
+  await assert.rejects(adapter.invoke('not_an_operation'),/CONTRACT_MISMATCH/);
+  await assert.rejects(adapter.invoke('create_update',{unknown:true}),/CONTRACT_MISMATCH/);
+  const created=await adapter.invoke('create_update',{projectId:'project-1',expectedBaseRevisionId:'revision-1',idempotencyKey:'parity-create',title:'Parity'});
+  assert.deepEqual(requests.filter(path=>path==='/api/operations').length,2);
+  assert.equal(created.operation,'create_update');
+  for(const key of contract.receiptRequired)assert.ok(Object.hasOwn(created,key),key);
+  context.fetch=async(path:string,options:RequestInit)=>path==='/api/operations'
+   ?new Response(JSON.stringify({observedRevisionId:'revision-1',value:{}}),{status:200,headers:{'content-type':'application/json'}})
+   :fetch(origin+path,{...options,headers:{...options.headers,cookie:owner.cookie,origin}});
+  await assert.rejects(adapter.invoke('create_update',{projectId:'project-1',expectedBaseRevisionId:'revision-1',idempotencyKey:'invalid-response',title:'Invalid'}),/CONTRACT_MISMATCH/);
+  assert.equal(manifest.capabilities.toolSchemas.find((tool:any)=>tool.name==='create_update').inputSchema.additionalProperties,false);
+ }finally{if(p){const exit=once(p.child,'exit');p.child.kill();await exit;}rmSync(f.root,{recursive:true,force:true});}
 });
 test('owner status and diagnostics expose durable backup evidence but no content or credentials',async()=>{
  const f=fixture();let p:Awaited<ReturnType<typeof launch>>|undefined;

@@ -10,7 +10,23 @@ const el=(tag,text,parent=root)=>{const n=document.createElement(tag);if(text!==
 const button=(text,fn,parent=root)=>{const b=el('button',text,parent);b.type='button';b.addEventListener('click',()=>busy(fn));return b;};
 const field=(label,type,parent)=>{const l=el('label',label,parent),i=el(type==='textarea'?'textarea':'input',undefined,l);if(type!=='textarea')i.type=type;i.required=true;i.maxLength=2048;return i;};
 async function api(path,data){const r=await fetch(path,{method:data===undefined?'GET':'POST',credentials:'same-origin',headers:data===undefined?{}:{'content-type':'application/json'},body:data===undefined?undefined:JSON.stringify(data),cache:'no-store'});const v=await r.json();if(!r.ok){if(v.code==='AUTH_REQUIRED'){root.replaceChildren();secretForm('claim');}throw Error(v.code||'REQUEST_FAILED');}return v;}
-const op=(name,args={})=>api('/api/operations',{name,arguments:args});
+let operationContract;
+async function contract(){
+ if(!operationContract)operationContract=Promise.all([api('/api/operations/contract'),api('/mcp/manifest.json')]).then(([owner,manifest])=>{
+  if(owner.schemaVersion!==manifest.toolContractVersion||JSON.stringify(owner.readTools)!==JSON.stringify(manifest.capabilities.readTools)||JSON.stringify(owner.tools.filter(t=>manifest.capabilities.tools.includes(t.name)))!==JSON.stringify(manifest.capabilities.toolSchemas))throw Error('CONTRACT_MISMATCH');
+  return owner;
+ }).catch(error=>{operationContract=null;throw error;});
+ return operationContract;
+}
+async function op(name,args={}){
+ const spec=await contract(),tool=spec.tools.find(t=>t.name===name),schema=tool?.inputSchema;
+ if(!schema||Object.keys(args).some(key=>!Object.hasOwn(schema.properties,key))||schema.required.some(key=>args[key]===undefined))throw Error('CONTRACT_MISMATCH');
+ const result=await api('/api/operations',{name,arguments:args});
+ if(result.code==='REFRESH_CONFLICT')return result;
+ const isRead=spec.readTools.includes(name),required=isRead?spec.readResponseRequired:spec.receiptRequired;
+ if((!isRead&&result.operation!==name)||!required.every(key=>Object.hasOwn(result,key)))throw Error('CONTRACT_MISMATCH');
+ return result;
+}
 const messages={AUTH_REQUIRED:'Owner access is required. Use the browser where you claimed this Foldy.',OWNER_REQUIRED:'Owner access is required.',SEALED:'This Foldy is sealed. Claim it with your one-use owner key.',ALREADY_CLAIMED:'This Foldy has already been claimed. Use the original owner browser; the one-use key cannot sign you in again.',AUTH_INVALID:'The key or password was not accepted. Check it and try again.',REVISION_CONFLICT:'This update has changed. Refresh and review the latest version before deciding.',APPROVAL_STALE:'Approval is out of date. Refresh and review again.',BLOCKING_COMMENTS:'Resolve blocking comments before approval or publication.',CACHE_UNAVAILABLE:'Access could not be changed safely. Viewing is locked; contact your operator.',RATE_LIMITED:'Too many attempts. Wait a minute before trying again.'};
 let working=false;
 async function busy(fn){if(working)return;working=true;root.setAttribute('aria-busy','true');root.querySelectorAll('button').forEach(b=>b.disabled=true);say('Working…');try{await fn();}catch(e){say(messages[e.message]||'Could not complete this request. Refresh to check the current state before trying again.');}finally{working=false;root.removeAttribute('aria-busy');root.querySelectorAll('button').forEach(b=>b.disabled=false);}}

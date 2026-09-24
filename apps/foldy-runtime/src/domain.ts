@@ -49,6 +49,10 @@ const reads=['get_project','get_workbook','list_pages','get_page','list_files','
 const draft=['refresh_update_proposal','create_update','create_page','remove_page','move_page','update_page','save_update_revision','submit_update_for_review'];
 const review=['add_review_comment','resolve_review_comment','request_update_changes','close_update','approve_update_revision','publish_update'];
 const extras:Record<string,string[]>={refresh_update_proposal:['newPublishedBaseRevisionId'],create_page:['path','content','mediaType'],remove_page:['path'],move_page:['path','destinationPath'],create_update:['title'],update_page:['path','content'],add_review_comment:['text','blocking','target'],resolve_review_comment:['commentId','reason'],request_update_changes:['reason'],close_update:['reason'],approve_update_revision:['reason'],publish_update:['reason']};
+export const toolContractVersion='foldy-tool-contract.v1';
+export const readToolNames=[...reads];
+export const draftToolNames=[...draft];
+export const operationReceiptRequired=['projectId','updateId','priorState','currentState','updateRevisionId','currentPublishedRevisionId','receiptId','occurredAt','actorRef','operation','reason'];
 function fail(code:string):never {throw Error(code);}
 export class Domain {
  private db:DatabaseSync;

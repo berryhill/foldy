@@ -7,7 +7,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { loadBundle, digest, safePath } from './bundle.js';
-import { Domain } from './domain.js';
+import { Domain, draftToolNames, readToolNames, operationReceiptRequired, toolContractVersion } from './domain.js';
 import { activeBundle } from './upgrade.js';
 import { OwnerAuthority, protectedAncestry, type AuthorityState } from './owner-authority.js';
 import { ownerUiRoute } from './owner-ui.js';
@@ -108,6 +108,11 @@ async function main(){
  }
  if(!getState())return json(res,423,{code:'SEALED'});
  if(await viewerRoute(req,res,path,`${dev?'http':'https'}://${host}`,access,owner,()=>domain.confirmAccessConfiguration({id:'owner',owner:true,scopes:[]})))return;
+ if(path==='/api/operations/contract'){
+ if(!owner(req))return json(res,401,{code:'AUTH_REQUIRED'});
+ if(req.method!=='GET')return json(res,405,{code:'METHOD_INVALID'});
+ return json(res,200,{schemaVersion:toolContractVersion,request:{name:'string',arguments:'inputSchema of named tool'},readTools:readToolNames,readResponseRequired:['observedRevisionId','value'],receiptRequired:operationReceiptRequired,tools:domain.tools({id:'owner',owner:true,scopes:[]})});
+ }
 if(path==='/api/operations'){
  if(!owner(req))return json(res,401,{code:'AUTH_REQUIRED'});
  if(req.method!=='POST')return json(res,405,{code:'METHOD_INVALID'});
@@ -116,7 +121,10 @@ if(path==='/api/operations'){
  if(!owner(req))return json(res,401,{code:'AUTH_REQUIRED'});
  return json(res,200,domain.dispatch(input.name,input.arguments,{id:'owner',owner:true,scopes:[]}));
  }
- if(path==='/mcp/manifest.json'&&req.method==='GET')return json(res,200,{schemaVersion:'foldy-mcp-manifest.v1',instanceId:identity.instanceId,projectId:identity.projectId,workbookId:identity.workbookId,currentPublishedRevisionId:domain.current(),serverName:'foldy-runtime',serverVersion:'0.1.0',endpoint:'/mcp',transport:dev?'HTTP loopback development only':'HTTPS Streamable HTTP',supportedProtocolVersions:[protocol],authenticationDiscovery:{mode:'oauth-authorization-code-pkce',oauth:true,protectedResourceMetadata:'/.well-known/oauth-protected-resource/mcp',authorizationServerMetadata:'/.well-known/oauth-authorization-server',fallback:'owner-issued-opaque-token'},capabilities:{tools:domain.tools({id:'discovery',owner:false,scopes:['foldy:read','foldy:draft:write']}).map(t=>t.name),scopes:['foldy:read','foldy:draft:write']},browserAccess:await access.status()});
+ if(path==='/mcp/manifest.json'&&req.method==='GET'){
+ const toolSchemas=domain.tools({id:'discovery',owner:false,scopes:['foldy:read','foldy:draft:write']});
+ return json(res,200,{schemaVersion:'foldy-mcp-manifest.v1',toolContractVersion,instanceId:identity.instanceId,projectId:identity.projectId,workbookId:identity.workbookId,currentPublishedRevisionId:domain.current(),serverName:'foldy-runtime',serverVersion:'0.1.0',endpoint:'/mcp',transport:dev?'HTTP loopback development only':'HTTPS Streamable HTTP',supportedProtocolVersions:[protocol],authenticationDiscovery:{mode:'oauth-authorization-code-pkce',oauth:true,protectedResourceMetadata:'/.well-known/oauth-protected-resource/mcp',authorizationServerMetadata:'/.well-known/oauth-authorization-server',fallback:'owner-issued-opaque-token'},capabilities:{tools:toolSchemas.map(t=>t.name),toolSchemas,readTools:readToolNames,draftTools:draftToolNames,scopes:['foldy:read','foldy:draft:write']},browserAccess:await access.status()});
+ }
  if(path==='/mcp'){
  const authorization=req.headers.authorization;const token=authorization?.startsWith('Bearer ')?authorization.slice(7):'';const grant=getState()!.grants.find(g=>token.length<=256&&g.verifier===digest(token)&&g.expiresAt>Date.now());
  if(!grant||!oauth.accepts(grant,origin)){res.setHeader('www-authenticate',`Bearer resource_metadata="${origin}/.well-known/oauth-protected-resource/mcp"`);return json(res,401,{code:'AUTH_INVALID'});}
