@@ -42,6 +42,32 @@ test('stale competing proposals refresh safely, request review and close with hi
  }finally{await context.close();await runtime.close(info.status!==info.expectedStatus);}
 });
 
+test('changes requested returns owner review to the submit gate', async ({browser},info)=>{
+ const runtime=await startFoldy();const context=await browser.newContext({ignoreHTTPSErrors:true});const page=await context.newPage();
+ page.on('dialog',d=>d.accept());
+ const op=async(name:string,args:Record<string,unknown>)=>{
+  const r=await context.request.post(runtime.url+'/api/operations',{headers:{origin:runtime.url},data:{name,arguments:args}});
+  expect(r.status()).toBe(200);return r.json();
+ };
+ try{
+  await page.goto(runtime.url+'/owner');await page.getByLabel('One-use owner key').fill(runtime.assertion);
+  await page.getByRole('button',{name:'Claim ownership',exact:true}).click();
+  await expect(page.getByRole('heading',{name:'Review what’s next'})).toBeVisible();
+  const base={projectId:'project-1',expectedBaseRevisionId:'revision-1'};
+  const created=await op('create_update',{...base,title:'Needs another review',idempotencyKey:randomUUID()});
+  const ref={...base,updateId:created.updateId,expectedUpdateRevisionId:created.updateRevisionId};
+  await op('submit_update_for_review',{...ref,idempotencyKey:randomUUID()});
+  await page.getByRole('button',{name:'Refresh',exact:true}).click();
+  await page.getByRole('button',{name:'Review update'}).click();
+  await expect(page.getByRole('button',{name:'Approve this version',exact:true})).toBeVisible();
+  await page.getByLabel('Reason for your decision').fill('Please revise this');
+  await page.getByRole('button',{name:'Request changes',exact:true}).click();
+  await expect(page.getByRole('status')).toContainText('Changes requested');
+  await expect(page.getByRole('button',{name:'Request review',exact:true})).toBeVisible();
+  await expect(page.getByRole('button',{name:'Approve this version',exact:true})).toHaveCount(0);
+ }finally{await context.close();await runtime.close(info.status!==info.expectedStatus);}
+});
+
 test('standalone owner keyboard claim, review, publication and reader separation', async ({ browser }, info) => {
  const runtime = await startFoldy();
  const owner = await browser.newContext({ignoreHTTPSErrors:true}); const viewer = await browser.newContext({ignoreHTTPSErrors:true});
