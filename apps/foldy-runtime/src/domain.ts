@@ -122,7 +122,7 @@ export class Domain {
  if(name==='add_review_comment'){const target=args.target as Record<string,string>;if(target.path&&!this.files(u.revision)[target.path])fail('REQUEST_INVALID');commentId=randomUUID();u.comments.push({id:commentId,text:args.text as string,blocking:args.blocking as boolean,resolved:false,target,revision:u.revision,actor:actor.id});if(args.blocking){u.state='Changes requested';delete u.approval;}}
  if(name==='resolve_review_comment'){const c=u.comments.find(c=>c.id===args.commentId);if(!c)fail('REQUEST_INVALID');c.resolved=true;}
  if(name==='request_update_changes'){u.state='Changes requested';delete u.approval;}
- if(name==='approve_update_revision'){this.check(u);if(!['Ready for review','Changes requested'].includes(u.state))fail('REVIEW_REQUIRED');u.approval=u.revision;u.state='Approved';}
+ if(name==='approve_update_revision'){this.check(u);if(u.state!=='Ready for review')fail('REVIEW_REQUIRED');u.approval=u.revision;u.state='Approved';}
  if(name==='publish_update'){if(u.approval&&u.approval!==u.revision)fail('APPROVAL_STALE');if(u.state!=='Approved'||u.approval!==u.revision)fail('REVIEW_REQUIRED');this.check(u);const changed=this.db.prepare('UPDATE meta SET value=? WHERE key=? AND value=?').run(u.revision,'current',u.base);if(changed.changes!==1)fail('REVISION_CONFLICT');u.state='Published';}
  if(name==='close_update')u.state='Closed';this.db.prepare('INSERT INTO updates VALUES(?,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value').run(u.id,JSON.stringify(u));
  const checksEvidence=['submit_update_for_review','approve_update_revision','publish_update'].includes(name)?dependencyEvidence(this.files(u.revision),u.revision):undefined;

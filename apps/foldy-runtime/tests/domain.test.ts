@@ -18,7 +18,7 @@ test('transactional isolated revisions, review gates, stale approval, idempotenc
  run('submit_update_for_review',ref,client);
  const comment=run('add_review_comment',{...ref,text:'fix this',blocking:true,target:{path:'index.html',field:'heading'}});
  assert.throws(()=>run('approve_update_revision',{...ref,reason:'reviewed'}),/BLOCKING_COMMENTS/);
- run('resolve_review_comment',{...ref,commentId:comment.commentId,reason:'fixed'});run('approve_update_revision',{...ref,reason:'reviewed'});
+ run('resolve_review_comment',{...ref,commentId:comment.commentId,reason:'fixed'});run('submit_update_for_review',ref);run('approve_update_revision',{...ref,reason:'reviewed'});
  const args={projectId:'p',expectedBaseRevisionId:'base',idempotencyKey:'publish',...ref,reason:'publish'};const published=d.dispatch('publish_update',args,owner);assert.deepEqual(d.dispatch('publish_update',args,owner),published);assert.throws(()=>d.dispatch('publish_update',{...args,reason:'different'},owner),/IDEMPOTENCY_CONFLICT/);
  assert.equal(d.file('index.html')?.bytes.toString(),'newer');assert.equal(d.file('index.html','base')?.bytes.toString(),'initial');
  assert.throws(()=>run('publish_update',{updateId:b.updateId,expectedUpdateRevisionId:b.updateRevisionId,reason:'conflict'}),/REVISION_CONFLICT/);
