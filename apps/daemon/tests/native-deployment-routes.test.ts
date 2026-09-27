@@ -28,6 +28,7 @@ test('injected owner resolver rejects viewer access and binds exact approval rec
  const post = (path: string, body: unknown, cookie = '', origin = base) => fetch(base + path, {method:'POST', headers:{'content-type':'application/json', cookie, origin}, body:JSON.stringify(body)});
  const root = '/api/foldy/native-deployments';
  try {
+  expect((await fetch(base+root+'/availability',{headers:{origin:base}})).status).toBe(403);
   expect((await post(root+'/prepare',s.request)).status).toBe(403); await expect(s.calls()).rejects.toThrow();
   const login = async () => (await post('/api/foldy-access/unlock',{password})).headers.get('set-cookie')!.split(';')[0]!;
   const viewerCookie = await login();
@@ -36,6 +37,7 @@ test('injected owner resolver rejects viewer access and binds exact approval rec
   expect((await post(root+'/execute',{approvalReceipt:'x',csrf:'x'},viewerCookie)).status).toBe(403);
   await expect(s.calls()).rejects.toThrow();
   const cookie = ownerCookie, other = otherOwnerCookie;
+  expect(await (await fetch(base+root+'/availability',{headers:{origin:base,cookie}})).json()).toEqual({available:true});
   expect((await post(root+'/prepare',s.request,cookie,'https://evil.example')).status).toBe(403); await expect(s.calls()).rejects.toThrow();
   expect((await post(root+'/prepare',{...s.request, admission:s.admission},cookie)).status).toBe(400); await expect(s.calls()).rejects.toThrow();
   const prepared = await post(root+'/prepare',s.request,cookie); expect(prepared.status).toBe(200); const q = await prepared.json() as NativeDeploymentPrepareResponse;
@@ -62,6 +64,9 @@ test('no owner resolver fails closed even when a viewer session exists', async (
  try {
    const login = await fetch(base+'/api/foldy-access/unlock', {method:'POST',headers:{origin:base,'content-type':'application/json'},body:JSON.stringify({password})});
    const cookie = login.headers.get('set-cookie')!.split(';')[0]!;
+   const availability = await fetch(base+'/api/foldy/native-deployments/availability', {headers:{origin:base,cookie}});
+   expect(availability.status).toBe(503);
+   expect((await availability.json() as {error:{code:string}}).error.code).toBe('FOLDY_OWNER_NOT_CONFIGURED');
    const response = await fetch(base+'/api/foldy/native-deployments/prepare', {method:'POST',headers:{origin:base,cookie,'content-type':'application/json'},body:JSON.stringify(s.request)});
    expect(response.status).toBe(503);
    expect(await response.json()).toEqual({ error: {

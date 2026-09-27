@@ -1,4 +1,8 @@
 import type {
+  NativeDeploymentRequest,
+  NativeDeploymentPrepareResponse,
+  NativeDeploymentResponse,
+  NativeDeploymentExecuteRequest,
   CreateFoldyMcpGrantResponse,
   DeployFoldyRevisionRequest,
   FoldyCynderDeploymentResponse,
@@ -48,6 +52,21 @@ const revisionBase = (projectId: string, revisionId: string) =>
   `${projectBase(projectId)}/revisions/${encodeURIComponent(revisionId)}`;
 
 export const foldyApi = {
+  nativeAvailability() {
+    return request<{ available: boolean }>('/api/foldy/native-deployments/availability');
+  },
+  nativePrepare(input: NativeDeploymentRequest) {
+    return request<NativeDeploymentPrepareResponse>('/api/foldy/native-deployments/prepare', { method: 'POST', body: JSON.stringify(input) });
+  },
+  nativeExecute(input: NativeDeploymentExecuteRequest) {
+    return request<NativeDeploymentResponse>('/api/foldy/native-deployments/execute', { method: 'POST', body: JSON.stringify(input) });
+  },
+  nativeInspect(operationId: string) {
+    return request<NativeDeploymentResponse>(`/api/foldy/native-deployments/${encodeURIComponent(operationId)}`);
+  },
+  nativeReconcile(operationId: string, deploymentId?: string) {
+    return request<NativeDeploymentResponse>(`/api/foldy/native-deployments/${encodeURIComponent(operationId)}/reconcile`, { method: 'POST', body: JSON.stringify(deploymentId ? { deploymentId } : {}) });
+  },
   importPreflight(projectId: string) {
     return request<import('@open-design/contracts').FoldyImportPreflight>(`${projectBase(projectId)}/foldy/import-adoption`);
   },

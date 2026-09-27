@@ -1,4 +1,8 @@
 import type {
+  NativeDeploymentRequest,
+  NativeDeploymentPrepareResponse,
+  NativeDeploymentResponse,
+  NativeDeploymentExecuteRequest,
   CreateFoldyMcpGrantResponse,
   DeployFoldyRevisionRequest,
   FoldyCynderDeploymentResponse,
@@ -18,6 +22,10 @@ import type {
 } from '@open-design/contracts';
 
 export type {
+  NativeDeploymentRequest,
+  NativeDeploymentPrepareResponse,
+  NativeDeploymentResponse,
+  NativeDeploymentExecuteRequest,
   CreateFoldyMcpGrantResponse,
   DeployFoldyRevisionRequest,
   FoldyCynderDeploymentResponse,

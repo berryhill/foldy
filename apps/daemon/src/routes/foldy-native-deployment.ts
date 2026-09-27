@@ -37,6 +37,16 @@ export function registerNativeDeploymentRoutes(app: Express, deps: {
     }
   };
   const root = '/api/foldy/native-deployments';
+  app.get(root + '/availability', async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    try {
+      await nativeDeploymentOwner(deps.access, req, deps.resolveOwner);
+      res.json({ available: Boolean(deps.service) });
+    } catch (e) {
+      const code = e instanceof Error && /^(FOLDY|CYNDER)_[A-Z_]+$/.test(e.message) ? e.message : 'FOLDY_OPERATION_FAILED';
+      res.status(code.endsWith('NOT_CONFIGURED') ? 503 : code.includes('SESSION') ? 401 : code.includes('DENIED') ? 403 : 400).json({ error: { code } });
+    }
+  });
   app.post(root + '/prepare', wrap(async (req, owner) => {
     if (!req.is('application/json')) throw new Error('FOLDY_INVALID_REQUEST');
     for (const [key, r] of receipts) if (r.expires <= now()) receipts.delete(key);

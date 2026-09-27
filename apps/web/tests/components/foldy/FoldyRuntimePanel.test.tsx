@@ -3,7 +3,6 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
-  createDeploymentReviewKey,
   FoldyRuntimeMount,
   FoldyRuntimePanel,
   isFoldyProjectMetadata,
@@ -62,7 +61,7 @@ function mockBootstrap(access = { enabled: false, authenticated: true }) {
     const url = String(input);
     if (url.includes('/foldy-access/status')) return response(access);
     if (url.endsWith('/publication')) return response(publication);
-    if (url.includes('/cynder/status')) return response(emptyStatus);
+    if (url.includes('/native-deployments/availability')) return response({ available: false });
     if (url.includes('/mcp/grants')) return response({ grants: [] });
     throw new Error(`Unexpected fetch ${url}`);
   });
@@ -115,18 +114,6 @@ describe('FoldyRuntimePanel', () => {
     await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
     expect(screen.queryByRole('button', { name: 'Adopt exact imported content' })).toBeNull();
   });
-  it('serializes deployment review identity without plaintext password material', () => {
-    const serialized = createDeploymentReviewKey({
-      revision: 'rev-2', environment: 'production', expected: null,
-      accessMode: 'password_required', mcpGrantId: 'grant-deployer', formRevision: 7,
-    });
-    expect(serialized).not.toContain('sensitive-password-value');
-    expect(JSON.parse(serialized)).toEqual({
-      revision: 'rev-2', environment: 'production', expected: null,
-      accessMode: 'password_required', mcpGrantId: 'grant-deployer', formRevision: 7,
-    });
-  });
-
   it('recognizes only exact Foldy enrollment metadata', () => {
     expect(isFoldyProjectMetadata({ foldy: true, entryFile: 'index.html' })).toBe(true);
     expect(isFoldyProjectMetadata({ foldy: 'true', entryFile: 'index.html' })).toBe(false);
@@ -260,237 +247,6 @@ describe('FoldyRuntimePanel', () => {
     await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/foldy-access/unlock', expect.objectContaining({ method: 'POST' })));
   });
 
-  it('requires access and an explicit deployer grant before exact review', async () => {
-    render(<FoldyRuntimePanel projectId="project-1" entryFile="index.html" defaultOpen />);
-    await screen.findByText('Working copy');
-    expect(screen.getByText(/requires both read and deployer scopes/i)).not.toBeNull();
-    expect((screen.getByRole('button', { name: 'Review deployment' }) as HTMLButtonElement).disabled).toBe(true);
-  });
-
-  it('sends public deployed access and explicit MCP grant only after unchanged review', async () => {
-    vi.mocked(fetch).mockImplementation((input, init) => {
-      const url = String(input);
-      if (url.includes('/foldy-access/status')) return response({ enabled: false, authenticated: true });
-      if (url.endsWith('/publication')) return response(publication);
-      if (url.includes('/cynder/status')) return response(emptyStatus);
-      if (url.includes('/mcp/grants?')) return response({ grants: [deployerGrant] });
-      if (url.includes('/cynder/deploy') && init?.method === 'POST') return response(activeReceipt, 201);
-      throw new Error(`Unexpected fetch ${url}`);
-    });
-    render(<FoldyRuntimePanel projectId="project-1" entryFile="index.html" defaultOpen />);
-    await screen.findByText('Working copy');
-    fireEvent.change(screen.getByLabelText('MCP grant'), { target: { value: 'grant-deployer' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Review deployment' }));
-    fireEvent.change(screen.getByLabelText('Expected provider revision'), { target: { value: 'changed' } });
-    expect((screen.getByRole('button', { name: 'Deploy exact revision' }) as HTMLButtonElement).disabled).toBe(true);
-    fireEvent.change(screen.getByLabelText('Expected provider revision'), { target: { value: '' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Review deployment' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Deploy exact revision' }));
-    await waitFor(() => {
-      const call = vi.mocked(fetch).mock.calls.find(([url]) => String(url).includes('/cynder/deploy'));
-      const body = JSON.parse(String(call?.[1]?.body));
-      expect(body).toMatchObject({ environment: 'production', accessMode: 'public', mcpGrantId: 'grant-deployer' });
-      expect(body).not.toHaveProperty('password');
-    });
-  });
-
-  it('shows deployment password only when required and enforces eight characters', async () => {
-    let deployBody: Record<string, unknown> | null = null;
-    vi.mocked(fetch).mockImplementation((input, init) => {
-      const url = String(input);
-      if (url.includes('/foldy-access/status')) return response({ enabled: false, authenticated: true });
-      if (url.endsWith('/publication')) return response(publication);
-      if (url.includes('/cynder/status')) return response(emptyStatus);
-      if (url.includes('/mcp/grants?')) return response({ grants: [deployerGrant] });
-      if (url.includes('/cynder/deploy') && init?.method === 'POST') { deployBody = JSON.parse(String(init.body)); return response({ ...activeReceipt, accessMode: 'password_required', binding: { ...activeReceipt.binding, accessMode: 'password_required' } }, 201); }
-      throw new Error(`Unexpected fetch ${url}`);
-    });
-    render(<FoldyRuntimePanel projectId="project-1" entryFile="index.html" defaultOpen />);
-    await screen.findByText('Working copy');
-    expect(screen.queryByLabelText('Deployed shared password')).toBeNull();
-    fireEvent.click(screen.getByLabelText('Shared password', { selector: 'input[type="radio"]' }));
-    fireEvent.change(screen.getByLabelText('MCP grant'), { target: { value: 'grant-deployer' } });
-    fireEvent.change(screen.getByLabelText('Deployed shared password'), { target: { value: 'short' } });
-    expect((screen.getByRole('button', { name: 'Review deployment' }) as HTMLButtonElement).disabled).toBe(true);
-    fireEvent.change(screen.getByLabelText('Deployed shared password'), { target: { value: 'long-enough' } });
-    expect((screen.getByRole('button', { name: 'Review deployment' }) as HTMLButtonElement).disabled).toBe(false);
-    fireEvent.click(screen.getByRole('button', { name: 'Review deployment' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Deploy exact revision' }));
-    await waitFor(() => expect(deployBody).toMatchObject({ accessMode: 'password_required', password: 'long-enough', mcpGrantId: 'grant-deployer' }));
-  });
-
-  it('loads durable binding, health, newest-first history, and safe remote instructions', async () => {
-    const older = { ...activeReceipt, receiptId: 'receipt-old', status: 'rolled_back' as const, createdAt: '2026-09-11T10:00:00Z' };
-    vi.mocked(fetch).mockImplementation((input) => {
-      const url = String(input);
-      if (url.includes('/foldy-access/status')) return response({ enabled: false, authenticated: true });
-      if (url.endsWith('/publication')) return response(publication);
-      if (url.includes('/cynder/status')) return response({ projectId: 'project-1', environment: 'production', binding: activeReceipt.binding, completed: [older, activeReceipt], staged: [], remoteMcpInstallInfo: remoteInstallInfo });
-      if (url.includes('/mcp/grants?')) return response({ grants: [deployerGrant] });
-      throw new Error(`Unexpected fetch ${url}`);
-    });
-    render(<FoldyRuntimePanel projectId="project-1" entryFile="index.html" defaultOpen />);
-    expect((await screen.findByRole('link', { name: 'Open live Foldy' })).getAttribute('href')).toBe('https://foldy.example/live');
-    expect(screen.getByText('artifact · Healthy · HTTP 200')).not.toBeNull();
-    const history = screen.getByRole('list', { name: 'Durable deployment receipt history' });
-    expect(history.children[0]?.textContent).toContain('receipt-active');
-    expect(screen.getByText('List the project without changing it.')).not.toBeNull();
-    fireEvent.click(screen.getByRole('tab', { name: 'Generic' }));
-    expect(screen.getByRole('tabpanel').textContent).toContain('OD_FOLDY_MCP_TOKEN');
-    expect(screen.getByRole('dialog').textContent).not.toMatch(/passwordScryptVerifier|tokenSha256|digest/i);
-  });
-
-  it('recovers a staged durable receipt then refreshes status', async () => {
-    const staged = { ...activeReceipt, receiptId: 'receipt-staged', status: 'staged' as const, recoverable: true, binding: null, completedAt: null };
-    let statusReads = 0;
-    vi.mocked(fetch).mockImplementation((input, init) => {
-      const url = String(input);
-      if (url.includes('/foldy-access/status')) return response({ enabled: false, authenticated: true });
-      if (url.endsWith('/publication')) return response(publication);
-      if (url.includes('/mcp/grants?')) return response({ grants: [deployerGrant] });
-      if (url.includes('/cynder/status')) { statusReads += 1; return response(statusReads === 1 ? { ...emptyStatus, staged: [staged] } : { ...emptyStatus, completed: [{ ...staged, status: 'failed' }] }); }
-      if (url.endsWith('/cynder/recover') && init?.method === 'POST') return response({ ...staged, status: 'failed' });
-      throw new Error(`Unexpected fetch ${url}`);
-    });
-    render(<FoldyRuntimePanel projectId="project-1" entryFile="index.html" defaultOpen />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Recover receipt-staged' }));
-    await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/projects/project-1/cynder/recover', expect.objectContaining({ body: JSON.stringify({ environment: 'production', receiptId: 'receipt-staged' }) })));
-    expect(statusReads).toBeGreaterThan(1);
-  });
-
-  it('excludes deployer-only grants because deployment needs both read and deployer scopes', async () => {
-    vi.mocked(fetch).mockImplementation((input) => {
-      const url = String(input);
-      if (url.includes('/foldy-access/status')) return response({ enabled: false, authenticated: true });
-      if (url.endsWith('/publication')) return response(publication);
-      if (url.includes('/cynder/status')) return response(emptyStatus);
-      if (url.includes('/mcp/grants?')) return response({ grants: [{ ...deployerGrant, grantId: 'deployer-only', scopes: ['deployer'] }] });
-      throw new Error(`Unexpected fetch ${url}`);
-    });
-    render(<FoldyRuntimePanel projectId="project-1" entryFile="index.html" defaultOpen />);
-    await screen.findByText('Working copy');
-    expect(screen.queryByRole('option', { name: /deployer-only/ })).toBeNull();
-    expect(screen.getByText(/read is required to serve the deployed MCP project context/i)).not.toBeNull();
-    expect((screen.getByRole('button', { name: 'Review deployment' }) as HTMLButtonElement).disabled).toBe(true);
-  });
-
-  it('rolls back durable history despite an unapproved latest revision and no current grant', async () => {
-    const unapprovedPublication = { ...publication, reviews: [] };
-    const historical = { ...activeReceipt, receiptId: 'receipt-history', revisionId: 'rev-1', status: 'rolled_back' as const, binding: { ...activeReceipt.binding, revisionId: 'rev-1', providerRevisionId: 'provider-rev-1' } };
-    let rollbackBody: Record<string, unknown> | null = null;
-    vi.mocked(fetch).mockImplementation((input, init) => {
-      const url = String(input);
-      if (url.includes('/foldy-access/status')) return response({ enabled: false, authenticated: true });
-      if (url.endsWith('/publication')) return response(unapprovedPublication);
-      if (url.includes('/mcp/grants?')) return response({ grants: [] });
-      if (url.includes('/cynder/status')) return response({ ...emptyStatus, binding: activeReceipt.binding, completed: [activeReceipt, historical] });
-      if (url.includes('/revisions/rev-1/cynder/rollback') && init?.method === 'POST') {
-        rollbackBody = JSON.parse(String(init.body));
-        return response({ ...historical, kind: 'rollback', status: 'active' });
-      }
-      throw new Error(`Unexpected fetch ${url}`);
-    });
-    render(<FoldyRuntimePanel projectId="project-1" entryFile="index.html" defaultOpen />);
-    const rollback = await screen.findByRole('button', { name: 'Rollback rev-1 on production' });
-    expect((rollback as HTMLButtonElement).disabled).toBe(false);
-    fireEvent.click(rollback);
-    await waitFor(() => expect(rollbackBody).toEqual({
-      environment: 'production',
-      expectedActiveProviderRevisionId: 'provider-rev-2',
-      idempotencyKey: expect.stringMatching(/^rollback-rev-1-/),
-    }));
-  });
-
-  it('offers Recover only for explicitly recoverable receipts and labels terminal failures', async () => {
-    const failed = { ...activeReceipt, receiptId: 'receipt-failed', status: 'failed' as const, recoverable: false, binding: null };
-    const rollbackFailed = { ...failed, receiptId: 'receipt-rollback-failed', status: 'rollback_failed' as const };
-    const staged = { ...failed, receiptId: 'receipt-staged', status: 'staged' as const, recoverable: true };
-    vi.mocked(fetch).mockImplementation((input) => {
-      const url = String(input);
-      if (url.includes('/foldy-access/status')) return response({ enabled: false, authenticated: true });
-      if (url.endsWith('/publication')) return response(publication);
-      if (url.includes('/mcp/grants?')) return response({ grants: [] });
-      if (url.includes('/cynder/status')) return response({ ...emptyStatus, completed: [failed, rollbackFailed], staged: [staged] });
-      throw new Error(`Unexpected fetch ${url}`);
-    });
-    render(<FoldyRuntimePanel projectId="project-1" entryFile="index.html" defaultOpen />);
-    expect(await screen.findByRole('button', { name: 'Recover receipt-staged' })).not.toBeNull();
-    expect(screen.queryByRole('button', { name: 'Recover receipt-failed' })).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Recover receipt-rollback-failed' })).toBeNull();
-    expect(screen.getByText(/^deploy · failed · terminal$/i)).not.toBeNull();
-    expect(screen.getByText(/^deploy · rollback failed · terminal$/i)).not.toBeNull();
-  });
-
-  it.each(['success', 'error'] as const)('clears password and reviewed state after deploy %s', async (outcome) => {
-    const password = 'sensitive-password-value';
-    vi.mocked(fetch).mockImplementation((input, init) => {
-      const url = String(input);
-      if (url.includes('/foldy-access/status')) return response({ enabled: false, authenticated: true });
-      if (url.endsWith('/publication')) return response(publication);
-      if (url.includes('/cynder/status')) return response(emptyStatus);
-      if (url.includes('/mcp/grants?')) return response({ grants: [deployerGrant] });
-      if (url.includes('/cynder/deploy') && init?.method === 'POST') return outcome === 'success' ? response(activeReceipt, 201) : response({ error: { message: 'deployment rejected' } }, 400);
-      throw new Error(`Unexpected fetch ${url}`);
-    });
-    render(<FoldyRuntimePanel projectId="project-1" entryFile="index.html" defaultOpen />);
-    await screen.findByText('Working copy');
-    fireEvent.click(screen.getByLabelText('Shared password', { selector: 'input[type="radio"]' }));
-    fireEvent.change(screen.getByLabelText('MCP grant'), { target: { value: 'grant-deployer' } });
-    fireEvent.change(screen.getByLabelText('Deployed shared password'), { target: { value: password } });
-    fireEvent.click(screen.getByRole('button', { name: 'Review deployment' }));
-    expect(screen.getByRole('dialog').textContent).not.toContain(password);
-    fireEvent.click(screen.getByRole('button', { name: 'Deploy exact revision' }));
-    await screen.findByText(outcome === 'success' ? /Action completed/ : /deployment rejected/);
-    expect((screen.getByLabelText('Deployed shared password') as HTMLInputElement).value).toBe('');
-    expect(screen.queryByRole('heading', { name: 'Deployment review' })).toBeNull();
-    expect(screen.getByRole('dialog').textContent).not.toContain(password);
-  });
-
-  it('discards password and review state on close and contains no obsolete deployment copy', async () => {
-    vi.mocked(fetch).mockImplementation((input) => {
-      const url = String(input);
-      if (url.includes('/foldy-access/status')) return response({ enabled: false, authenticated: true });
-      if (url.endsWith('/publication')) return response(publication);
-      if (url.includes('/cynder/status')) return response(emptyStatus);
-      if (url.includes('/mcp/grants?')) return response({ grants: [deployerGrant] });
-      throw new Error(`Unexpected fetch ${url}`);
-    });
-    render(<FoldyRuntimePanel projectId="project-1" entryFile="index.html" defaultOpen />);
-    await screen.findByText('Working copy');
-    expect(screen.queryByText(/session receipts/i)).toBeNull();
-    expect(screen.queryByText(/deployment receipts from this session/i)).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Run preflight' })).toBeNull();
-    fireEvent.click(screen.getByLabelText('Shared password', { selector: 'input[type="radio"]' }));
-    fireEvent.change(screen.getByLabelText('MCP grant'), { target: { value: 'grant-deployer' } });
-    fireEvent.change(screen.getByLabelText('Deployed shared password'), { target: { value: 'sensitive-password-value' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Review deployment' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Close Foldy runtime' }));
-    expect(screen.queryByRole('dialog')).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: 'Foldy runtime' }));
-    await screen.findByText('Working copy');
-    expect(screen.queryByLabelText('Deployed shared password')).toBeNull();
-    expect(screen.queryByRole('heading', { name: 'Deployment review' })).toBeNull();
-    expect(screen.getByRole('dialog').textContent).not.toContain('sensitive-password-value');
-  });
-
-  it('removes stale remote instructions as soon as the environment changes', async () => {
-    vi.mocked(fetch).mockImplementation((input) => {
-      const url = String(input);
-      if (url.includes('/foldy-access/status')) return response({ enabled: false, authenticated: true });
-      if (url.endsWith('/publication')) return response(publication);
-      if (url.includes('/mcp/grants?')) return response({ grants: [deployerGrant] });
-      if (url.includes('environment=production')) return response({ ...emptyStatus, binding: activeReceipt.binding, completed: [activeReceipt], remoteMcpInstallInfo: remoteInstallInfo });
-      if (url.includes('environment=staging')) return response({ ...emptyStatus, environment: 'staging' });
-      throw new Error(`Unexpected fetch ${url}`);
-    });
-    render(<FoldyRuntimePanel projectId="project-1" entryFile="index.html" defaultOpen />);
-    expect(await screen.findByText('List the project without changing it.')).not.toBeNull();
-    fireEvent.change(screen.getByLabelText('Environment'), { target: { value: 'staging' } });
-    expect(screen.queryByText('List the project without changing it.')).toBeNull();
-    await screen.findByText('No active deployment binding for this environment.');
-    expect(screen.queryByText('List the project without changing it.')).toBeNull();
-  });
-
   it('distinguishes local daemon protection from deployed access', async () => {
     render(<FoldyRuntimePanel projectId="project-1" entryFile="index.html" defaultOpen />);
     expect(await screen.findByText('Local admin access')).not.toBeNull();
@@ -503,7 +259,7 @@ describe('FoldyRuntimePanel', () => {
       const url = String(input);
       if (url.includes('/foldy-access/status')) return response({ enabled: false, authenticated: true });
       if (url.endsWith('/publication')) return response(publication);
-      if (url.includes('/cynder/status')) return response(emptyStatus);
+      if (url.includes('/native-deployments/availability')) return response({ available: false });
       if (url.includes('/mcp/grants?')) return response({ grants: [
         { ...deployerGrant, grantId: 'active', revocationStatus: null },
         { ...deployerGrant, grantId: 'pending', revokedAt: '2026-09-11T00:00:00Z', revocationStatus: 'pending' },

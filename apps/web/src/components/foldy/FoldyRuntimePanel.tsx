@@ -13,8 +13,6 @@ import {
 import { foldyApi, FoldyApiError } from './api';
 import type {
   CreateFoldyMcpGrantResponse,
-  FoldyCynderStatusResponse,
-  FoldyDeploymentAccessMode,
   FoldyBrowserAccessStatus,
   FoldyMcpGrant,
   FoldyMcpInstallInfo,
@@ -77,17 +75,6 @@ function isApprovedRevision(
   return state.reviews.some(
     (review) => review.revisionId === revisionId && review.status === 'approved',
   );
-}
-
-export function createDeploymentReviewKey(input: {
-  revision: string | null;
-  environment: string;
-  expected: string | null;
-  accessMode: FoldyDeploymentAccessMode;
-  mcpGrantId: string;
-  formRevision: number;
-}): string {
-  return JSON.stringify(input);
 }
 
 function Detail({ label, children }: { label: string; children: ReactNode }) {
@@ -225,93 +212,74 @@ function PasswordPanel({ access, refreshAll, refreshAccess, actions }: { access:
   return <section className={`foldy-card${locked ? ' foldy-card-prominent' : ''}`} aria-labelledby="foldy-password-title"><p className="foldy-eyebrow">Local admin access</p><h3 id="foldy-password-title">{locked ? 'Unlock browser' : 'Protect this OpenDesign daemon'}</h3><p className="foldy-hint">This controls local daemon administration only. It does not set deployed Foldy access.</p><p className="foldy-status-line">Protection: <span className="foldy-badge">{access.enabled ? 'Enabled' : 'Disabled'}</span> · Session: {access.authenticated ? 'Authenticated' : 'Locked'}</p><form onSubmit={submit}><label htmlFor={passwordId}>{locked ? 'Shared password' : access.enabled ? 'New shared password' : 'Shared password'}</label><input id={passwordId} type="password" autoComplete={locked ? 'current-password' : 'new-password'} minLength={8} maxLength={1024} value={password} onChange={(event) => setPassword(event.target.value)} /><p className="foldy-hint">{locked ? 'Enter the shared password to restore this browser session.' : 'Use 8–1024 characters. Saving rotates all existing browser sessions.'}</p><div className="foldy-actions"><button type="submit" className="foldy-button primary" disabled={password.length < 8 || actions.busy !== null}>{locked ? 'Unlock' : access.enabled ? 'Rotate password' : 'Enable password'}</button>{!locked && access.enabled ? <button type="button" className="foldy-button danger" disabled={actions.busy !== null} onClick={() => void actions.act('disable-password', () => foldyApi.disablePassword(), refreshAccess)}>Disable protection</button> : null}{!locked && access.authenticated ? <button type="button" className="foldy-button" disabled={actions.busy !== null} onClick={() => void actions.act('logout', () => foldyApi.logout(), refreshAccess)}>Log out browser</button> : null}</div></form></section>;
 }
 
-function CynderLifecyclePanel({ projectId, state, grants, refreshPublication, actions }: { projectId: string; state: FoldyPublicationProjectState; grants: FoldyMcpGrant[]; refreshPublication: () => Promise<void>; actions: ActionContext }) {
-  const [environment, setEnvironment] = useState('production');
-  const [expected, setExpected] = useState('');
-  const [accessMode, setAccessMode] = useState<FoldyDeploymentAccessMode>('public');
-  const [password, setPassword] = useState('');
-  const [mcpGrantId, setMcpGrantId] = useState('');
-  const [formRevision, setFormRevision] = useState(0);
-  const [reviewedKey, setReviewedKey] = useState<string | null>(null);
-  const [status, setStatus] = useState<FoldyCynderStatusResponse | null>(null);
-  const [statusError, setStatusError] = useState<string | null>(null);
-  const statusRequestRevision = useRef(0);
-  const revision = state.latestRevisionId;
-  const deployerGrants = grants.filter((grant) => !grant.revokedAt && grant.scopes.includes('read') && grant.scopes.includes('deployer'));
-  const selectedGrant = deployerGrants.find((grant) => grant.grantId === mcpGrantId) ?? null;
-  const normalizedEnvironment = environment.trim();
-  const normalizedExpected = expected.trim() || null;
-  const passwordReady = accessMode === 'public' || password.length >= 8;
-  const reviewKey = JSON.stringify({ revision, environment: normalizedEnvironment, expected: normalizedExpected, accessMode, mcpGrantId, formRevision });
-  const invalidateReview = () => { setFormRevision((current) => current + 1); setReviewedKey(null); };
-  const clearSensitiveForm = () => { setPassword(''); invalidateReview(); };
-  const checks = [
-    { label: 'Saved revision exists', ok: Boolean(revision) },
-    { label: 'Exact revision approval is current', ok: isApprovedRevision(state, revision) },
-    { label: 'Environment is named', ok: Boolean(normalizedEnvironment) },
-    { label: 'Deployed access is ready', ok: passwordReady },
-    { label: selectedGrant ? `MCP read + deployer grant selected: ${selectedGrant.grantId}` : 'Deployment requires both read and deployer scopes. Read is required to serve the deployed MCP project context; deployer authorizes the release.', ok: Boolean(selectedGrant) },
-  ];
-  const ready = checks.every((check) => check.ok);
-  const refreshStatus = useCallback(async () => {
-    const requestRevision = ++statusRequestRevision.current;
-    if (!normalizedEnvironment) { setStatus(null); setStatusError(null); return; }
-    try {
-      const next = await foldyApi.status(projectId, normalizedEnvironment);
-      if (requestRevision !== statusRequestRevision.current) return;
-      setStatus(next); setStatusError(null);
-    } catch (error) {
-      if (requestRevision !== statusRequestRevision.current) return;
-      setStatus(null); setStatusError(error instanceof Error ? error.message : String(error));
-    }
-  }, [normalizedEnvironment, projectId]);
-
+function NativeDeploymentPanel({ projectId, actions }: { projectId: string; actions: ActionContext }) {
+  const [available, setAvailable] = useState(false);
+  const [availabilityError, setAvailabilityError] = useState<string | null>(null);
+  const [input, setInput] = useState('');
+  const [prepared, setPrepared] = useState<import('./types').NativeDeploymentPrepareResponse | null>(null);
+  const [termsReviewed, setTermsReviewed] = useState(false);
+  const [result, setResult] = useState<import('./types').NativeDeploymentResponse | null>(null);
+  const [operationId, setOperationId] = useState('');
+  const [deploymentId, setDeploymentId] = useState('');
+  const [now, setNow] = useState(Date.now());
+  const inputRevision = useRef(0);
   useEffect(() => {
-    if (mcpGrantId && !selectedGrant) setMcpGrantId('');
-  }, [mcpGrantId, selectedGrant]);
-  useEffect(() => { setStatus(null); setStatusError(null); void refreshStatus(); }, [refreshStatus]);
-  useEffect(() => { clearSensitiveForm(); }, [projectId]);
-
-  const deploy = () => {
-    if (!revision || !selectedGrant || !ready) return;
-    void actions.act('cynder:deploy', () => foldyApi.deploy(projectId, revision, {
-      environment: normalizedEnvironment,
-      idempotencyKey: `deploy-${revision}-${Date.now()}`,
-      expectedActiveProviderRevisionId: normalizedExpected,
-      accessMode,
-      ...(accessMode === 'password_required' ? { password } : {}),
-      mcpGrantId: selectedGrant.grantId,
-    }), async () => { await Promise.all([refreshPublication(), refreshStatus()]); }).finally(clearSensitiveForm);
+    inputRevision.current++;
+    let live = true;
+    setAvailable(false); setPrepared(null); setTermsReviewed(false); setResult(null); setInput(''); setOperationId('');
+    void foldyApi.nativeAvailability().then((status) => { if (live) { setAvailable(status.available); setAvailabilityError(null); } })
+      .catch((error) => { if (live) setAvailabilityError(error instanceof Error ? error.message : String(error)); });
+    return () => { live = false; };
+  }, [projectId]);
+  useEffect(() => {
+    if (!prepared?.expiresAt) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [prepared?.expiresAt]);
+  const prepare = async () => {
+    setPrepared(null); setTermsReviewed(false); setResult(null);
+    const request = JSON.parse(input) as import('./types').NativeDeploymentRequest;
+    if (request?.schemaVersion !== 'foldy-native-deployment.v1' || request.release?.projectId !== projectId) throw new Error('Release must name this project and the native deployment schema.');
+    const revision = inputRevision.current;
+    const next = await foldyApi.nativePrepare(request);
+    if (revision !== inputRevision.current) return;
+    setPrepared(next); setResult(next.result); setOperationId(next.result.operationId);
   };
-  const rollback = (targetRevisionId: string) => {
-    if (!normalizedEnvironment || !status || status.projectId !== projectId || status.environment !== normalizedEnvironment) return;
-    void actions.act(`cynder:rollback:${targetRevisionId}`, () => foldyApi.rollback(projectId, targetRevisionId, {
-      environment: normalizedEnvironment,
-      idempotencyKey: `rollback-${targetRevisionId}-${Date.now()}`,
-      expectedActiveProviderRevisionId: status.binding?.providerRevisionId ?? null,
-    }), async () => { await Promise.all([refreshPublication(), refreshStatus()]); });
+  const inspect = async () => {
+    const next = await foldyApi.nativeInspect(operationId.trim());
+    if (next.release.projectId !== projectId) throw new Error('Operation belongs to another project.');
+    setPrepared(null); setTermsReviewed(false); setResult(next);
   };
-  const recover = (receiptId: string) => void actions.act(`recover:${receiptId}`, () => foldyApi.recover(projectId, { environment: normalizedEnvironment, receiptId }), refreshStatus);
-  const receipts = [...(status?.completed ?? []), ...(status?.staged ?? [])].sort((left, right) => right.createdAt.localeCompare(left.createdAt) || right.receiptId.localeCompare(left.receiptId));
-  const currentHealth = status?.completed.find((receipt) => receipt.binding?.providerRevisionId === status.binding?.providerRevisionId)?.health ?? null;
-  const remoteInfo = status?.remoteMcpInstallInfo;
-
-  return <section className="foldy-card foldy-card-wide" aria-labelledby="foldy-cynder-title">
-    <div className="foldy-card-heading"><div><p className="foldy-eyebrow">Deployment</p><h3 id="foldy-cynder-title">Deploy to Cynder</h3></div><button type="button" className="foldy-button subtle" onClick={() => void refreshStatus()}>Refresh status</button></div>
-    <Context revision={revision} cas={`Expected active provider revision: ${normalizedExpected ?? 'None'}`} />
-    <div className="foldy-two-fields"><label>Environment<input value={environment} onChange={(event) => { setEnvironment(event.target.value); invalidateReview(); }} /></label><label>Expected provider revision<input value={expected} placeholder="None" onChange={(event) => { setExpected(event.target.value); invalidateReview(); }} /></label></div>
-    <fieldset><legend>Deployed access</legend><div className="foldy-checks"><label><input type="radio" name="foldy-deployed-access" checked={accessMode === 'public'} onChange={() => { setAccessMode('public'); setPassword(''); invalidateReview(); }} /> Public</label><label><input type="radio" name="foldy-deployed-access" checked={accessMode === 'password_required'} onChange={() => { setAccessMode('password_required'); invalidateReview(); }} /> Shared password</label></div>{accessMode === 'password_required' ? <label>Deployed shared password<input aria-label="Deployed shared password" type="password" minLength={8} maxLength={1024} autoComplete="new-password" value={password} onChange={(event) => { setPassword(event.target.value); invalidateReview(); }} /><span className="foldy-hint">Use at least 8 characters. This password protects the deployed Foldy.</span></label> : null}</fieldset>
-    <label>MCP grant<select value={mcpGrantId} onChange={(event) => { setMcpGrantId(event.target.value); invalidateReview(); }}><option value="">Select a read + deployer grant</option>{deployerGrants.map((grant) => <option key={grant.grantId} value={grant.grantId}>{grant.grantId} · {grant.scopes.join(', ')}</option>)}</select></label>
-    <div className="foldy-subsection"><h4>Readiness checks</h4><ul className="foldy-readiness">{checks.map((check) => <li key={check.label} className={check.ok ? 'ok' : 'blocked'}><span aria-hidden="true">{check.ok ? '✓' : '!'}</span>{check.label}</li>)}</ul></div>
-    <div className="foldy-actions"><button type="button" className="foldy-button" disabled={!ready || actions.busy !== null} onClick={() => setReviewedKey(reviewKey)}>Review deployment</button><button type="button" className="foldy-button primary" disabled={!ready || reviewedKey !== reviewKey || actions.busy !== null} onClick={deploy}>Deploy exact revision</button></div>
-    {reviewedKey === reviewKey ? <div className="foldy-subsection" role="status"><h4>Deployment review</h4><dl className="foldy-state-grid"><Detail label="Exact revision"><code>{revision}</code></Detail><Detail label="Environment">{normalizedEnvironment}</Detail><Detail label="Access">{accessMode === 'public' ? 'Public' : 'Shared password'}</Detail><Detail label="MCP grant"><code>{mcpGrantId}</code></Detail><Detail label="Expected provider state"><code>{normalizedExpected ?? 'None'}</code></Detail></dl><p className="foldy-hint">Deploy remains enabled only while this exact reviewed state and revision approval remain unchanged. The server repeats authoritative checks.</p></div> : null}
-    <div className="foldy-subsection"><h4>Authoritative deployment status</h4>{statusError ? <p className="foldy-hint" role="alert">{statusError}</p> : !status ? <p className="foldy-empty">Loading deployment status…</p> : status.binding ? <><dl className="foldy-state-grid"><Detail label="Revision"><code>{status.binding.revisionId}</code></Detail><Detail label="Provider revision"><code>{status.binding.providerRevisionId}</code></Detail><Detail label="Access">{status.binding.accessMode === 'public' ? 'Public' : 'Shared password'}</Detail><Detail label="Stable URL"><a href={status.binding.url} target="_blank" rel="noreferrer">{status.binding.url}</a></Detail><Detail label="MCP URL"><code>{status.binding.mcpUrl}</code></Detail></dl><div className="foldy-actions"><a className="foldy-button" href={status.binding.url} target="_blank" rel="noreferrer">Open live Foldy</a></div>{currentHealth ? <ul className="foldy-readiness">{currentHealth.checks.map((check) => <li key={check.name} className={check.ok ? 'ok' : 'blocked'}><span aria-hidden="true">{check.ok ? '✓' : '!'}</span>{check.name} · {check.ok ? 'Healthy' : 'Unhealthy'}{check.status === undefined ? '' : ` · HTTP ${check.status}`}</li>)}</ul> : <Empty>No semantic health checks recorded.</Empty>}</> : <Empty>No active deployment binding for this environment.</Empty>}</div>
-    <div className="foldy-subsection"><h4>Durable deployment receipts</h4>{receipts.length ? <ol className="foldy-list" aria-label="Durable deployment receipt history">{receipts.map((receipt) => {
-      const terminalLabel = receipt.status === 'failed' ? 'failed · terminal' : receipt.status === 'rollback_failed' ? 'rollback failed · terminal' : receipt.status.replace('_', ' ');
-      const rollbackReady = Boolean(status && status.projectId === projectId && status.environment === normalizedEnvironment && receipt.status !== 'staged');
-      return <li key={receipt.receiptId}><div><strong>{receipt.kind} · {terminalLabel}</strong><span><code>{receipt.receiptId}</code> · <code>{receipt.revisionId}</code> · {receipt.accessMode} · grant <code>{receipt.mcpGrantId}</code></span></div><div className="foldy-row-actions">{receipt.binding?.url ? <a href={receipt.binding.url} target="_blank" rel="noreferrer">Open</a> : null}{receipt.recoverable === true ? <button type="button" className="foldy-button small" disabled={actions.busy !== null} aria-label={`Recover ${receipt.receiptId}`} onClick={() => recover(receipt.receiptId)}>Recover</button> : null}{receipt.status !== 'staged' ? <button type="button" className="foldy-button small" disabled={!rollbackReady || actions.busy !== null} aria-label={`Rollback ${receipt.revisionId} on ${receipt.environment}`} onClick={() => rollback(receipt.revisionId)}>Rollback</button> : null}</div></li>;
-    })}</ol> : <Empty>No durable deployment receipts.</Empty>}</div>
-    {remoteInfo ? <InstallInstructions info={remoteInfo} title="Remote MCP instructions" /> : null}
+  const reconcile = async () => {
+    const next = await foldyApi.nativeReconcile(operationId.trim(), deploymentId.trim() || undefined);
+    if (next.release.projectId !== projectId) throw new Error('Operation belongs to another project.');
+    setPrepared(null); setTermsReviewed(false); setResult(next);
+  };
+  const quote = prepared?.result.review?.quote;
+  const approvable = Boolean(termsReviewed && quote && prepared?.result.state === 'quoted' && prepared.approvalReceipt && prepared.csrf && prepared.expiresAt && now < prepared.expiresAt);
+  return <section className="foldy-card foldy-card-wide" aria-labelledby="foldy-native-title">
+    <p className="foldy-eyebrow">Native hosting · operator controlled</p><h3 id="foldy-native-title">Foldy Server deployment</h3>
+    <p className="foldy-hint">Publication and MCP grants are local controls, not an autonomous hosted instance. The former Cynder gateway deployment is not the native hosting path.</p>
+    {availabilityError ? <p role="alert">Native hosting availability could not be verified: {availabilityError}. No paid action is enabled.</p>
+      : !available ? <p role="status">Native hosting is unavailable on this daemon. No provider deployment or autonomous instance can be started here.</p>
+      : <>
+        <label>Native deployment request (non-secret JSON)<textarea rows={8} value={input} onChange={(event) => { inputRevision.current++; setInput(event.target.value); setPrepared(null); setTermsReviewed(false); }} placeholder="Release identity, hostingAdmissionRef, idempotencyKey, budget" /></label>
+        <p className="foldy-hint">Use a verified sealed release and hosting admission reference. Never paste passwords, tokens, or signer material. Preparing may contact the provider for a quote; it does not approve payment.</p>
+        <button type="button" className="foldy-button" disabled={!input.trim() || actions.busy !== null} onClick={() => void actions.act('native:prepare', prepare, async () => {})}>Prepare and review quote</button>
+        {prepared?.result.state === 'quoted' && quote ? <div className="foldy-subsection" role="status"><h4>Server-bound quote review</h4>
+          <dl className="foldy-state-grid"><Detail label="Operation"><code>{prepared.result.operationId}</code></Detail><Detail label="Exact release"><code>{prepared.result.release.revisionId}</code></Detail><Detail label="Image"><code>{prepared.result.release.imageDigest}</code></Detail><Detail label="Action"><code>{quote.actionId}</code></Detail><Detail label="Quote"><code>{quote.quoteId}</code></Detail><Detail label="Amount (atomic units)">{quote.amountAtomic}</Detail><Detail label="Network / asset">{quote.network} / <code>{quote.asset}</code></Detail><Detail label="Payee"><code>{quote.payee}</code></Detail><Detail label="Budget cap (atomic units)">{quote.totalCapAtomic} · <code>{quote.budgetId}</code></Detail><Detail label="Approval expires">{prepared.expiresAt ? new Date(prepared.expiresAt).toLocaleString() : 'Unavailable'}</Detail></dl>
+          <p className="foldy-hint">The server binds this approval receipt to this browser session and exact quote. This quote does not establish hosting lease expiry, grace, retention, Foldy claim, readiness, or activation. Verify those terms in the admitted hosting contract before approving.</p>
+          <label><input type="checkbox" checked={termsReviewed} onChange={(event) => setTermsReviewed(event.target.checked)} /> I reviewed the admitted hosting contract’s expiry, grace, retention and payment terms outside this quote.</label>
+          <button type="button" className="foldy-button primary" disabled={!approvable || actions.busy !== null} onClick={() => {
+            const receipt = prepared.approvalReceipt, csrf = prepared.csrf;
+            if (!receipt || !csrf) return;
+            setPrepared(null); // one attempt only: ambiguous outcomes require inspect/reconcile, not resubmit
+            void actions.act('native:execute', async () => { const next = await foldyApi.nativeExecute({ approvalReceipt: receipt, csrf }); setResult(next); }, async () => {});
+          }}>Approve quoted payment and execute once</button>
+        </div> : null}
+        <div className="foldy-subsection"><h4>Inspect or reconcile operation</h4><label>Operation ID<input value={operationId} onChange={(event) => { setOperationId(event.target.value); setPrepared(null); setResult(null); }} /></label><label>Provider deployment ID (optional, for owner readback)<input value={deploymentId} onChange={(event) => setDeploymentId(event.target.value)} /></label><div className="foldy-actions"><button type="button" className="foldy-button" disabled={!/^[a-f0-9]{64}$/.test(operationId.trim()) || actions.busy !== null} onClick={() => void actions.act('native:inspect', inspect, async () => {})}>Inspect</button><button type="button" className="foldy-button" disabled={!/^[a-f0-9]{64}$/.test(operationId.trim()) || actions.busy !== null} onClick={() => void actions.act('native:reconcile', reconcile, async () => {})}>Reconcile same operation</button></div></div>
+        {result ? <div className="foldy-subsection" role="status"><h4>Native operation readback</h4><dl className="foldy-state-grid"><Detail label="Operation"><code>{result.operationId}</code></Detail><Detail label="State">{result.state}</Detail><Detail label="Payment observation">{result.review?.observation ? `${result.review.observation.status} · ${result.review.observation.paymentStatus} · settled evidence: ${result.review.observation.settledEvidence}` : 'Not observed'}</Detail><Detail label="Provider deployment">{result.deployment ? `${result.deployment.deploymentId} · ${result.deployment.status}` : 'Not observed'}</Detail><Detail label="Foldy activation">Not verified</Detail></dl><p className="foldy-hint">Provider payment/owner readback is not a live URL, application health, owner claim, or READY transition.</p></div> : null}
+      </>}
   </section>;
 }
 
@@ -387,14 +355,14 @@ export function FoldyRuntimePanel({ projectId, entryFile, defaultOpen = false }:
   return <>
     <button ref={triggerRef} type="button" className="foldy-runtime-trigger" aria-haspopup="dialog" aria-expanded={open} onClick={() => setOpen(true)}>Foldy runtime</button>
     {open ? <div className="foldy-runtime-backdrop" data-testid="foldy-runtime-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) close(); }}><aside ref={panelRef} className="foldy-runtime-panel" role="dialog" aria-modal="true" aria-labelledby={titleId}>
-      <header className="foldy-runtime-header"><div><p className="foldy-eyebrow">Project operations</p><h2 id={titleId}>Foldy runtime</h2><p>Publish, review, connect, protect, and deploy outside the rendered artifact.</p></div><button ref={closeRef} type="button" className="foldy-close" aria-label="Close Foldy runtime" onClick={close}>×</button></header>
+      <header className="foldy-runtime-header"><div><p className="foldy-eyebrow">Project operations</p><h2 id={titleId}>Foldy runtime</h2><p>Publish, review, connect, protect, and inspect native hosting outside the rendered artifact.</p></div><button ref={closeRef} type="button" className="foldy-close" aria-label="Close Foldy runtime" onClick={close}>×</button></header>
       {notice ? <div className={`foldy-notice ${notice.tone}`} role={notice.tone === 'error' ? 'alert' : 'status'}>{notice.text}</div> : null}
       {!access ? <div className="foldy-loading" role="status">Loading Foldy state…</div> : locked ? <div className="foldy-runtime-grid foldy-runtime-grid-locked"><PasswordPanel access={access} refreshAll={refreshAll} refreshAccess={refreshAccess} actions={actions} /></div> : !state ? <div className="foldy-loading" role="status">Loading Foldy state…</div> : <div className="foldy-runtime-grid">
         <PublicationPanel projectId={projectId} entryFile={entryFile} state={state} refresh={refreshPublication} actions={actions} />
         <ReviewPanel projectId={projectId} state={state} refresh={refreshPublication} actions={actions} />
         <McpPanel projectId={projectId} revision={state.latestRevisionId} grants={grants} issued={issued} installInfo={installInfo} refresh={refreshGrants} setIssued={setIssued} setInstallInfo={setInstallInfo} actions={actions} />
         <PasswordPanel access={access} refreshAll={refreshAll} refreshAccess={refreshAccess} actions={actions} />
-        <CynderLifecyclePanel projectId={projectId} state={state} grants={grants} refreshPublication={refreshPublication} actions={actions} />
+        <NativeDeploymentPanel projectId={projectId} actions={actions} />
       </div>}
     </aside></div> : null}
   </>;
