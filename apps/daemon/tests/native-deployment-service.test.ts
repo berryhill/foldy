@@ -69,6 +69,23 @@ test('service durable quote, exact approval, execute, reconcile and original DEP
   expect((await s.calls()).map(c => c.command)).toEqual(['prepare-deploy', 'challenge', 'execute', 'action-get', 'action-get', 'deployment-get', 'deployment-get', 'version-get']);
   await expect(s.make().execute(owner, approval)).rejects.toThrow('FOLDY_APPROVAL_MISMATCH');
 });
+test('owner identity is rechecked for inspect, execute and reconcile, and a quote cannot be spent twice', async () => {
+  const s = await serviceSetup();
+  const service = new NativeDeploymentService({ consumer:s.bridge, dataRoot:s.dir, origin:s.config.origin,
+    requireOwner:async (actor:string) => ({principalId:actor, sessionId:actor+'-session'}),
+    resolveAdmission:async () => s.admission });
+  const q = await service.prepare('owner-1',s.request);
+  const approval = {operationId:q.operationId, requestDigest:q.review!.requestDigest,
+    reviewedStateDigest:q.review!.reviewedStateDigest, approvedQuote:q.review!.quote!};
+  await expect(service.inspect('viewer',q.operationId)).rejects.toThrow('FOLDY_OWNER_REQUIRED');
+  await expect(service.execute('viewer',approval)).rejects.toThrow('FOLDY_OWNER_REQUIRED');
+  expect((await s.calls()).map(c=>c.command)).toEqual(['prepare-deploy','challenge']);
+  await s.mode('settled');
+  await service.execute('owner-1',approval);
+  await expect(service.reconcile('viewer',q.operationId)).rejects.toThrow('FOLDY_OWNER_REQUIRED');
+  await expect(service.execute('owner-1',approval)).rejects.toThrow('FOLDY_APPROVAL_MISMATCH');
+  expect((await s.calls()).filter(c=>c.command==='execute')).toHaveLength(1);
+});
 test.each(['durableStorage', 'bootstrap', 'singleWriter', 'transport'] as const)('missing %s fails before consumer process', async key => {
   const s = await serviceSetup(); delete (s.admission as unknown as Record<string, unknown>)[key];
   await expect(s.service.prepare(owner, s.request)).rejects.toThrow('FOLDY_HOSTING_NOT_ADMITTED');

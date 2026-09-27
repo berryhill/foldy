@@ -33,6 +33,7 @@ test('injected owner resolver rejects viewer access and binds exact approval rec
   const viewerCookie = await login();
   // A shared browser password is viewer access, not deployment authority.
   expect((await post(root+'/prepare',s.request,viewerCookie)).status).toBe(403);
+  expect((await post(root+'/execute',{approvalReceipt:'x',csrf:'x'},viewerCookie)).status).toBe(403);
   await expect(s.calls()).rejects.toThrow();
   const cookie = ownerCookie, other = otherOwnerCookie;
   expect((await post(root+'/prepare',s.request,cookie,'https://evil.example')).status).toBe(403); await expect(s.calls()).rejects.toThrow();
@@ -45,6 +46,7 @@ test('injected owner resolver rejects viewer access and binds exact approval rec
   expect((await s.calls()).length).toBe(2); await s.mode('settled');
   expect((await post(root+'/execute',approval,cookie)).status).toBe(200);
   expect((await post(root+'/execute',approval,cookie)).status).toBe(403);
+  expect((await post(root+'/execute',approval,other)).status).toBe(403);
   expect((await fetch(base+root+'/'+q.result.operationId,{headers:{cookie}})).status).toBe(200);
   expect((await post(root+'/'+q.result.operationId+'/reconcile',{},cookie)).status).toBe(200);
  } finally { await new Promise<void>((r,j)=>server.close(e=>e?j(e):r())); }
@@ -62,9 +64,41 @@ test('no owner resolver fails closed even when a viewer session exists', async (
    const cookie = login.headers.get('set-cookie')!.split(';')[0]!;
    const response = await fetch(base+'/api/foldy/native-deployments/prepare', {method:'POST',headers:{origin:base,cookie,'content-type':'application/json'},body:JSON.stringify(s.request)});
    expect(response.status).toBe(503);
-   expect((await response.json() as { error: { code: string } }).error.code).toBe('FOLDY_OWNER_NOT_CONFIGURED');
+   expect(await response.json()).toEqual({ error: {
+     code: 'FOLDY_OWNER_NOT_CONFIGURED', state: 'blocked',
+     nextAction: 'Configure an authenticated deploying-principal session resolver; local origin and the shared viewer password are not owner authentication.',
+   } });
    await expect(s.calls()).rejects.toThrow();
  } finally { await new Promise<void>((r,j)=>server.close(e=>e?j(e):r())); }
+});
+test('malformed deploying principal is denied before a quote or receipt is created', async () => {
+ const s = await serviceSetup(); const access = await createBrowserPasswordAccess({dataRoot:s.dir});
+ const app = express(); app.use(express.json());
+ const service = new NativeDeploymentService<Request>({consumer:s.bridge,dataRoot:s.dir,origin:s.config.origin,
+  requireOwner:async()=>({principalId:'owner-1',sessionId:'session-1'}),resolveAdmission:async()=>s.admission});
+ registerNativeDeploymentRoutes(app,{access,service,resolveOwner:async()=>({principalId:'owner-1',sessionId:''})});
+ const server = app.listen(0,'127.0.0.1'); await new Promise<void>(r=>server.once('listening',r));
+ const base = 'http://127.0.0.1:'+(server.address() as {port:number}).port;
+ try {
+  const response = await fetch(base+'/api/foldy/native-deployments/prepare',{method:'POST',headers:{origin:base,'content-type':'application/json'},body:JSON.stringify(s.request)});
+  expect(response.status).toBe(401);
+  expect((await response.json() as {error:{code:string}}).error.code).toBe('FOLDY_OWNER_SESSION_INVALID');
+  await expect(s.calls()).rejects.toThrow();
+ } finally {await new Promise<void>((r,j)=>server.close(e=>e?j(e):r()));}
+});
+test('authenticated owner sees the missing hosting capability as an actionable blocked state', async () => {
+ const s = await serviceSetup(); const access = await createBrowserPasswordAccess({dataRoot:s.dir});
+ const app = express(); app.use(express.json());
+ registerNativeDeploymentRoutes(app, {access, resolveOwner:async()=>({principalId:'owner-1',sessionId:'owner-session'})});
+ const server = app.listen(0,'127.0.0.1'); await new Promise<void>(r=>server.once('listening',r));
+ const base = 'http://127.0.0.1:'+(server.address() as {port:number}).port;
+ try {
+  const response = await fetch(base+'/api/foldy/native-deployments/prepare',{method:'POST',headers:{origin:base,'content-type':'application/json'},body:JSON.stringify(s.request)});
+  expect(response.status).toBe(503);
+  expect(await response.json()).toEqual({error:{code:'FOLDY_HOSTING_NOT_CONFIGURED',state:'blocked',
+    nextAction:'Provide an authoritative Cynder hosting admission adapter for the sealed release, durable storage, one-use owner bootstrap, fenced writer, HTTPS MCP route and exact native DEPLOY payload before enabling this route.'}});
+  await expect(s.calls()).rejects.toThrow();
+ } finally {await new Promise<void>((r,j)=>server.close(e=>e?j(e):r()));}
 });
 test('missing resolver fails before prepare consumer', async () => {
  const s = await serviceSetup(); const service = new NativeDeploymentService({consumer:new NativeCynderConsumer(s.config), dataRoot:s.dir, origin:s.config.origin, requireOwner:async()=>({principalId:'owner-1',sessionId:'session-1'})});

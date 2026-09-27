@@ -3,13 +3,20 @@ import type { Express, Request, Response } from 'express';
 import type { BrowserPasswordAccess } from '../foldy-access/browser-password.js';
 import type { NativeDeploymentService, DeploymentOwner, NativeDeploymentApproval } from '../foldy-deployments/native-deployment-service.js';
 import type { NativeDeploymentPrepareResponse } from '@open-design/contracts';
+const blocked = {
+  FOLDY_OWNER_NOT_CONFIGURED: 'Configure an authenticated deploying-principal session resolver; local origin and the shared viewer password are not owner authentication.',
+  FOLDY_HOSTING_NOT_CONFIGURED: 'Provide an authoritative Cynder hosting admission adapter for the sealed release, durable storage, one-use owner bootstrap, fenced writer, HTTPS MCP route and exact native DEPLOY payload before enabling this route.',
+} as const;
 export async function nativeDeploymentOwner(
   access: BrowserPasswordAccess, req: Request,
   resolveOwner?: (request: Request) => Promise<DeploymentOwner>,
 ): Promise<DeploymentOwner> {
   if (!access.isAdministrativeRequest(req)) throw new Error('FOLDY_ORIGIN_DENIED');
   if (!resolveOwner) throw new Error('FOLDY_OWNER_NOT_CONFIGURED');
-  return resolveOwner(req);
+  const owner = await resolveOwner(req);
+  const validId = (value: unknown): boolean => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value);
+  if (!owner || !validId(owner.principalId) || !validId(owner.sessionId)) throw new Error('FOLDY_OWNER_SESSION_INVALID');
+  return owner;
 }
 export function registerNativeDeploymentRoutes(app: Express, deps: {
   access: BrowserPasswordAccess; service?: NativeDeploymentService<Request>;
@@ -21,11 +28,12 @@ export function registerNativeDeploymentRoutes(app: Express, deps: {
     res.setHeader('Cache-Control', 'no-store');
     try {
       const owner = await nativeDeploymentOwner(deps.access, req, deps.resolveOwner);
-      if (!deps.service) { res.status(503).json({ error: { code: 'FOLDY_HOSTING_NOT_CONFIGURED' } }); return; }
+      if (!deps.service) { res.status(503).json({ error: { code: 'FOLDY_HOSTING_NOT_CONFIGURED', state: 'blocked', nextAction: blocked.FOLDY_HOSTING_NOT_CONFIGURED } }); return; }
       res.json(await fn(req, owner));
     } catch (e) {
       const code = e instanceof Error && /^(FOLDY|CYNDER)_[A-Z_]+$/.test(e.message) ? e.message : 'FOLDY_OPERATION_FAILED';
-      res.status(code.endsWith('NOT_CONFIGURED') ? 503 : code.includes('SESSION') ? 401 : code.includes('DENIED') ? 403 : 400).json({ error: { code } });
+      res.status(code.endsWith('NOT_CONFIGURED') ? 503 : code.includes('SESSION') ? 401 : code.includes('DENIED') ? 403 : 400)
+        .json({ error: { code, ...(Object.hasOwn(blocked, code) ? { state: 'blocked', nextAction: blocked[code as keyof typeof blocked] } : {}) } });
     }
   };
   const root = '/api/foldy/native-deployments';

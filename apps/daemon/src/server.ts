@@ -3740,8 +3740,11 @@ export async function startServer({
       isFormalProject: isFormalFoldyProject,
     },
   });
-  // No stateful hosting admission is configured: authenticate first, then return
-  // an explicit unavailable result rather than falling back to static deployment.
+  // Neither the shared-password viewer session nor same-origin local authority
+  // authenticates the deploying principal. The legacy static /v1/foldy provider
+  // adapter does not attest native sealed owner bootstrap, durable storage,
+  // fenced writer or HTTPS project MCP. Until an authoritative owner resolver
+  // and native hosting-admission adapter exist, keep this route fail-closed.
   registerNativeDeploymentRoutes(app, { access: browserPasswordAccess });
   const foldyMcpRevocations = createFoldyMcpRevocationService({
     grants: foldyMcpGrants,
