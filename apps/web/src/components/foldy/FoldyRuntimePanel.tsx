@@ -217,27 +217,22 @@ function NativeDeploymentPanel({ projectId, actions }: { projectId: string; acti
   const [availabilityError, setAvailabilityError] = useState<string | null>(null);
   const [input, setInput] = useState('');
   const [prepared, setPrepared] = useState<import('./types').NativeDeploymentPrepareResponse | null>(null);
-  const [termsReviewed, setTermsReviewed] = useState(false);
+
   const [result, setResult] = useState<import('./types').NativeDeploymentResponse | null>(null);
   const [operationId, setOperationId] = useState('');
   const [deploymentId, setDeploymentId] = useState('');
-  const [now, setNow] = useState(Date.now());
+
   const inputRevision = useRef(0);
   useEffect(() => {
     inputRevision.current++;
     let live = true;
-    setAvailable(false); setPrepared(null); setTermsReviewed(false); setResult(null); setInput(''); setOperationId('');
+    setAvailable(false); setPrepared(null); setResult(null); setInput(''); setOperationId('');
     void foldyApi.nativeAvailability().then((status) => { if (live) { setAvailable(status.available); setAvailabilityError(null); } })
       .catch((error) => { if (live) setAvailabilityError(error instanceof Error ? error.message : String(error)); });
     return () => { live = false; };
   }, [projectId]);
-  useEffect(() => {
-    if (!prepared?.expiresAt) return;
-    const timer = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(timer);
-  }, [prepared?.expiresAt]);
   const prepare = async () => {
-    setPrepared(null); setTermsReviewed(false); setResult(null);
+    setPrepared(null); setResult(null);
     const request = JSON.parse(input) as import('./types').NativeDeploymentRequest;
     if (request?.schemaVersion !== 'foldy-native-deployment.v1' || request.release?.projectId !== projectId) throw new Error('Release must name this project and the native deployment schema.');
     const revision = inputRevision.current;
@@ -248,34 +243,26 @@ function NativeDeploymentPanel({ projectId, actions }: { projectId: string; acti
   const inspect = async () => {
     const next = await foldyApi.nativeInspect(operationId.trim());
     if (next.release.projectId !== projectId) throw new Error('Operation belongs to another project.');
-    setPrepared(null); setTermsReviewed(false); setResult(next);
+    setPrepared(null); setResult(next);
   };
   const reconcile = async () => {
     const next = await foldyApi.nativeReconcile(operationId.trim(), deploymentId.trim() || undefined);
     if (next.release.projectId !== projectId) throw new Error('Operation belongs to another project.');
-    setPrepared(null); setTermsReviewed(false); setResult(next);
+    setPrepared(null); setResult(next);
   };
   const quote = prepared?.result.review?.quote;
-  const approvable = Boolean(termsReviewed && quote && prepared?.result.state === 'quoted' && prepared.approvalReceipt && prepared.csrf && prepared.expiresAt && now < prepared.expiresAt);
   return <section className="foldy-card foldy-card-wide" aria-labelledby="foldy-native-title">
     <p className="foldy-eyebrow">Native hosting · operator controlled</p><h3 id="foldy-native-title">Foldy Server deployment</h3>
     <p className="foldy-hint">Publication and MCP grants are local controls, not an autonomous hosted instance. The former Cynder gateway deployment is not the native hosting path.</p>
     {availabilityError ? <p role="alert">Native hosting availability could not be verified: {availabilityError}. No paid action is enabled.</p>
       : !available ? <p role="status">Native hosting is unavailable on this daemon. No provider deployment or autonomous instance can be started here.</p>
       : <>
-        <label>Native deployment request (non-secret JSON)<textarea rows={8} value={input} onChange={(event) => { inputRevision.current++; setInput(event.target.value); setPrepared(null); setTermsReviewed(false); }} placeholder="Release identity, hostingAdmissionRef, idempotencyKey, budget" /></label>
+        <label>Native deployment request (non-secret JSON)<textarea rows={8} value={input} onChange={(event) => { inputRevision.current++; setInput(event.target.value); setPrepared(null); }} placeholder="Release identity, hostingAdmissionRef, idempotencyKey, budget" /></label>
         <p className="foldy-hint">Use a verified sealed release and hosting admission reference. Never paste passwords, tokens, or signer material. Preparing may contact the provider for a quote; it does not approve payment.</p>
         <button type="button" className="foldy-button" disabled={!input.trim() || actions.busy !== null} onClick={() => void actions.act('native:prepare', prepare, async () => {})}>Prepare and review quote</button>
         {prepared?.result.state === 'quoted' && quote ? <div className="foldy-subsection" role="status"><h4>Server-bound quote review</h4>
           <dl className="foldy-state-grid"><Detail label="Operation"><code>{prepared.result.operationId}</code></Detail><Detail label="Exact release"><code>{prepared.result.release.revisionId}</code></Detail><Detail label="Image"><code>{prepared.result.release.imageDigest}</code></Detail><Detail label="Action"><code>{quote.actionId}</code></Detail><Detail label="Quote"><code>{quote.quoteId}</code></Detail><Detail label="Amount (atomic units)">{quote.amountAtomic}</Detail><Detail label="Network / asset">{quote.network} / <code>{quote.asset}</code></Detail><Detail label="Payee"><code>{quote.payee}</code></Detail><Detail label="Budget cap (atomic units)">{quote.totalCapAtomic} · <code>{quote.budgetId}</code></Detail><Detail label="Approval expires">{prepared.expiresAt ? new Date(prepared.expiresAt).toLocaleString() : 'Unavailable'}</Detail></dl>
-          <p className="foldy-hint">The server binds this approval receipt to this browser session and exact quote. This quote does not establish hosting lease expiry, grace, retention, Foldy claim, readiness, or activation. Verify those terms in the admitted hosting contract before approving.</p>
-          <label><input type="checkbox" checked={termsReviewed} onChange={(event) => setTermsReviewed(event.target.checked)} /> I reviewed the admitted hosting contract’s expiry, grace, retention and payment terms outside this quote.</label>
-          <button type="button" className="foldy-button primary" disabled={!approvable || actions.busy !== null} onClick={() => {
-            const receipt = prepared.approvalReceipt, csrf = prepared.csrf;
-            if (!receipt || !csrf) return;
-            setPrepared(null); // one attempt only: ambiguous outcomes require inspect/reconcile, not resubmit
-            void actions.act('native:execute', async () => { const next = await foldyApi.nativeExecute({ approvalReceipt: receipt, csrf }); setResult(next); }, async () => {});
-          }}>Approve quoted payment and execute once</button>
+          <p className="foldy-hint">This quote does not establish hosting lease expiry, grace, retention, Foldy claim, readiness, or activation. Authoritative lease terms are unavailable in this response; paid execution remains unavailable in the browser until the server presents and binds those terms to the approval receipt.</p>
         </div> : null}
         <div className="foldy-subsection"><h4>Inspect or reconcile operation</h4><label>Operation ID<input value={operationId} onChange={(event) => { setOperationId(event.target.value); setPrepared(null); setResult(null); }} /></label><label>Provider deployment ID (optional, for owner readback)<input value={deploymentId} onChange={(event) => setDeploymentId(event.target.value)} /></label><div className="foldy-actions"><button type="button" className="foldy-button" disabled={!/^[a-f0-9]{64}$/.test(operationId.trim()) || actions.busy !== null} onClick={() => void actions.act('native:inspect', inspect, async () => {})}>Inspect</button><button type="button" className="foldy-button" disabled={!/^[a-f0-9]{64}$/.test(operationId.trim()) || actions.busy !== null} onClick={() => void actions.act('native:reconcile', reconcile, async () => {})}>Reconcile same operation</button></div></div>
         {result ? <div className="foldy-subsection" role="status"><h4>Native operation readback</h4><dl className="foldy-state-grid"><Detail label="Operation"><code>{result.operationId}</code></Detail><Detail label="State">{result.state}</Detail><Detail label="Payment observation">{result.review?.observation ? `${result.review.observation.status} · ${result.review.observation.paymentStatus} · settled evidence: ${result.review.observation.settledEvidence}` : 'Not observed'}</Detail><Detail label="Provider deployment">{result.deployment ? `${result.deployment.deploymentId} · ${result.deployment.status}` : 'Not observed'}</Detail><Detail label="Foldy activation">Not verified</Detail></dl><p className="foldy-hint">Provider payment/owner readback is not a live URL, application health, owner claim, or READY transition.</p></div> : null}

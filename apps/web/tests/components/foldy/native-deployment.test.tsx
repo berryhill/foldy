@@ -43,7 +43,7 @@ describe('native Foldy operator deployment', () => {
     expect(screen.getByRole('heading', { name: 'Connect an assistant' })).not.toBeNull();
     expect(prepareCount + executeCount).toBe(0);
   });
-  it('reviews provider quote and uses only server receipt and csrf to execute once', async () => {
+  it('shows a quote but never offers payment approval without authoritative lease terms', async () => {
     available = true; mount();
     const field = await screen.findByLabelText('Native deployment request (non-secret JSON)');
     fireEvent.change(field, { target: { value: JSON.stringify(request) } });
@@ -51,17 +51,9 @@ describe('native Foldy operator deployment', () => {
     await screen.findByRole('heading', { name: 'Server-bound quote review' });
     expect(screen.getByText(/does not establish hosting lease expiry/)).not.toBeNull();
     expect(prepareCount).toBe(1);
-    const execute = screen.getByRole('button', { name: 'Approve quoted payment and execute once' }) as HTMLButtonElement;
-    expect(execute.disabled).toBe(true);
-    fireEvent.click(screen.getByLabelText(/I reviewed the admitted hosting contract/));
-    expect(execute.disabled).toBe(false);
-    fireEvent.click(execute);
-    await waitFor(() => expect(executeCount).toBe(1));
-    const call = vi.mocked(fetch).mock.calls.find(([url]) => String(url).endsWith('/native-deployments/execute'))!;
-    expect(JSON.parse(String(call[1]?.body))).toEqual({ approvalReceipt: 'server-receipt', csrf: 'server-csrf' });
     expect(screen.queryByRole('button', { name: 'Approve quoted payment and execute once' })).toBeNull();
-    expect(screen.getByText('Not verified')).not.toBeNull();
-    expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes('/cynder/deploy'))).toBe(false);
+    expect(executeCount).toBe(0);
+    expect(screen.getByText(/authoritative lease terms are unavailable/i)).not.toBeNull();
   });
   it('invalidates approval on request edit and exposes same-operation inspect/reconcile parity with CLI', async () => {
     available = true; mount();
