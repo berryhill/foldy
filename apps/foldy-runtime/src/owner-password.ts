@@ -14,8 +14,8 @@ export function validateOwnerPassword(value: unknown): value is string {
 }
 
 const hex = (value: unknown, bytes: number): value is string => typeof value === 'string' && new RegExp(`^[a-f0-9]{${bytes * 2}}$`).test(value);
-const validVerifier = (value: unknown): value is OwnerPasswordVerifier => {
-  if (!value || typeof value !== 'object') return false;
+export const validOwnerPasswordVerifier = (value: unknown): value is OwnerPasswordVerifier => {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).sort().join() !== 'algorithm,hash,salt') return false;
   const v = value as Partial<OwnerPasswordVerifier>;
   return v.algorithm === 'argon2id' && hex(v.salt, 16) && hex(v.hash, 32);
 };
@@ -42,7 +42,7 @@ export async function deriveOwnerPassword(password: unknown): Promise<OwnerPassw
 }
 
 export async function verifyOwnerPassword(password: unknown, verifier: unknown): Promise<boolean> {
-  if (!validVerifier(verifier)) throw new Error('VERIFIER_UNAVAILABLE');
+  if (!validOwnerPasswordVerifier(verifier)) throw new Error('VERIFIER_UNAVAILABLE');
   if (!validateOwnerPassword(password)) return false;
   const salt = verifier.salt, expected = Buffer.from(verifier.hash, 'hex');
   const actual = await derive(password, salt, 'verify');

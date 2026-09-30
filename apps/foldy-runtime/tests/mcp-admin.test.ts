@@ -25,7 +25,7 @@ test('owner grant listing and exact opaque/OAuth session revocation through HTTP
   const metadata=await (await fetch(origin+'/.well-known/oauth-authorization-server')).json();assert.deepEqual(metadata.grant_types_supported,['authorization_code']);assert.deepEqual(metadata.code_challenge_methods_supported,['S256']);
   assert.equal((await (await fetch(origin+'/.well-known/oauth-protected-resource/mcp')).json()).resource,origin+'/mcp');
   assert.equal((await json('/oauth/register',{redirect_uris:['https://client.example/callback']})).status,423);
-  const claim=await json('/api/claim',{assertion});const cookie=claim.headers.get('set-cookie')!.split(';')[0];
+  const claim=await json('/api/claim',{assertion,password:randomBytes(24).toString('hex')});const cookie=claim.headers.get('set-cookie')!.split(';')[0];
   const owner={cookie,origin};
 
  const get=()=>fetch(origin+'/api/mcp-grants',{headers:owner});

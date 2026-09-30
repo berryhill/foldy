@@ -13,6 +13,7 @@ test('password rotation denies prior viewer grant and old password without grant
   try {
     await page.goto(runtime.url + '/owner');
     await page.getByLabel('One-use owner key').fill(runtime.assertion);
+    await page.getByLabel('New owner password').fill(randomBytes(24).toString('hex'));
     await page.getByRole('button', { name: 'Claim ownership' }).click();
     await expect(page.getByRole('heading', { name: 'Review what’s next' })).toBeVisible();
     const configure = async (password: string) => {

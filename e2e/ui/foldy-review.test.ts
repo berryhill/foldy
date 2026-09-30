@@ -46,7 +46,7 @@ test('owner understands changed pages and text before inspecting isolated previe
     }
     if (!port) throw new Error('local synthetic runtime did not start: ' + logs.replaceAll(assertion, '[REDACTED]'));
     const url = `http://127.0.0.1:${port}`;
-    const claim = await context.request.post(url + '/api/claim', { data: { assertion }, headers: { origin: url } });
+    const claim = await context.request.post(url + '/api/claim', { data: { assertion, password: randomBytes(24).toString('hex') }, headers: { origin: url } });
     expect(claim.status()).toBe(200);
     const ownerCookie = claim.headers()['set-cookie']?.split(';')[0];
     expect(ownerCookie).toBeTruthy();

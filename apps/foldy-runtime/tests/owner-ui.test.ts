@@ -31,8 +31,8 @@ test('public owner shell, trusted script, sealed and authenticated gates',async(
  for(const path of ['/owner','/unlock']){const r=await fetch(u+path);assert.equal(r.status,200);const html=await r.text();assert.ok(!html.includes('Immutable Foldy'));assert.ok(!html.includes(f.assertion));assert.match(html,/role="status"/);const csp=r.headers.get('content-security-policy')!;assert.match(csp,/script-src 'nonce-/);assert.ok(!csp.includes("'unsafe-inline'"));assert.equal(r.headers.get('cache-control'),'no-store');}
  const script=await fetch(u+'/owner/app.js');assert.equal(script.status,200);const source=await script.text();new Function(source);assert.ok(!source.includes('innerHTML'));assert.ok(!source.includes('localStorage'));assert.match(source,/textContent/);assert.match(source,/expectedUpdateRevisionId/);
  assert.equal((await fetch(u+'/')).status,423);assert.equal((await post(u+'/api/operations',{name:'list_updates',arguments:{}})).status,423);
- const claimed=await post(u+'/api/claim',{assertion:f.assertion});assert.equal(claimed.status,200);const cookie=claimed.headers.get('set-cookie')!;assert.match(cookie,/Secure; HttpOnly/);const owner={cookie:cookie.split(';')[0],origin:u};
- assert.equal((await post(u+'/api/claim',{assertion:f.assertion})).status,409);
+ const claimed=await post(u+'/api/claim',{assertion:f.assertion,password:randomBytes(24).toString('hex')});assert.equal(claimed.status,200);const cookie=claimed.headers.get('set-cookie')!;assert.match(cookie,/Secure; HttpOnly/);const owner={cookie:cookie.split(';')[0],origin:u};
+ assert.equal((await post(u+'/api/claim',{assertion:f.assertion,password:randomBytes(24).toString('hex')})).status,409);
  assert.equal((await post(u+'/api/operations',{name:'list_updates',arguments:{}})).status,401);
  assert.equal((await post(u+'/api/operations',{name:'list_updates',arguments:{}},owner)).status,200);
  const content=await fetch(u+'/');assert.equal(content.status,200);assert.match(content.headers.get('content-security-policy')!,/sandbox/);assert.ok(!content.headers.get('content-security-policy')!.includes('nonce-'));assert.match(await content.text(),/Immutable Foldy/);

@@ -29,7 +29,7 @@ test('real process backup is owner-only, restores content, and logout/recovery r
  const post=(path:string,data:unknown,cookie='',origin=url)=>fetch(url+path,{method:'POST',headers:{'content-type':'application/json',origin,cookie},body:JSON.stringify(data)});
  const get=(cookie='',extra:Record<string,string>={})=>fetch(url+'/api/backup',{headers:{cookie,...extra}});
  assert.equal((await get()).status,401);
- const claimed=await post('/api/claim',{assertion});assert.equal(claimed.status,200);const owner=claimed.headers.get('set-cookie')!.split(';')[0];
+ const claimed=await post('/api/claim',{assertion,password:randomBytes(24).toString('hex')});assert.equal(claimed.status,200);const owner=claimed.headers.get('set-cookie')!.split(';')[0];
  assert.equal((await post('/api/owner/viewer-access',{mode:'password_required',password},owner)).status,200);
  const unlocked=await post('/api/viewer/unlock',{password});assert.equal(unlocked.status,200);const viewer=unlocked.headers.get('set-cookie')!.split(';')[0];
  const granted=await post('/api/mcp-grants',{},owner);const grant=await granted.json();
@@ -46,7 +46,7 @@ test('real process backup is owner-only, restores content, and logout/recovery r
  assert.equal((await post('/api/viewer/logout',{},viewer)).status,200);assert.equal((await fetch(url+'/',{headers:{cookie:viewer}})).status,401);
  assert.equal((await post('/api/owner/logout',{},owner)).status,200);assert.equal((await get(owner)).status,401);
  assert.equal((await post('/api/owner/recover',{password:recovery})).status,401);
- const recovered=await post('/api/owner/recover',{assertion:recovery});assert.equal(recovered.status,200);const fresh=recovered.headers.get('set-cookie')!.split(';')[0];assert.equal((await get(fresh)).status,200);assert.equal((await get(owner)).status,401);assert.equal((await post('/api/owner/recover',{assertion:recovery})).status,401);
+ const recovered=await post('/api/owner/recover',{assertion:recovery,password:randomBytes(24).toString('hex')});assert.equal(recovered.status,200);const fresh=recovered.headers.get('set-cookie')!.split(';')[0];assert.equal((await get(fresh)).status,200);assert.equal((await get(owner)).status,401);assert.equal((await post('/api/owner/recover',{assertion:recovery,password:randomBytes(24).toString('hex')})).status,401);
  const script=await(await fetch(url+'/owner/app.js')).text();for(const path of ['/api/backup','/api/viewer/logout','/api/owner/logout','/api/owner/recover'])assert.ok(script.includes(path),path);
  for(const label of ['Download backup','Log out of viewing','Log out of owner workspace','Recover owner access'])assert.ok(script.includes(label),label);
  assert.ok(!/localStorage|innerHTML/.test(script));assert.match(script,/credentials:'same-origin'/);

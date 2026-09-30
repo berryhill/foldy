@@ -44,7 +44,7 @@ test('real process OAuth consent/PKCE, resource binding, safe MCP read, revocati
   const metadata=await (await fetch(origin+'/.well-known/oauth-authorization-server')).json();assert.deepEqual(metadata.grant_types_supported,['authorization_code']);assert.deepEqual(metadata.code_challenge_methods_supported,['S256']);
   assert.equal((await (await fetch(origin+'/.well-known/oauth-protected-resource/mcp')).json()).resource,origin+'/mcp');
   assert.equal((await json('/oauth/register',{redirect_uris:['https://client.example/callback']})).status,423);
-  const claim=await json('/api/claim',{assertion});const cookie=claim.headers.get('set-cookie')!.split(';')[0];
+  const claim=await json('/api/claim',{assertion,password:randomBytes(24).toString('hex')});const cookie=claim.headers.get('set-cookie')!.split(';')[0];
   const owner={cookie,origin};
   for(const redirect of ['http://client.example/callback','https://client.example/#fragment','javascript:alert(1)','https://name:pass@client.example/callback'])assert.equal((await json('/oauth/register',{redirect_uris:[redirect]})).status,400);
   const registration=await json('/oauth/register',{client_name:'Proof <client>',redirect_uris:['https://client.example/callback','http://127.0.0.1:43210/callback'],token_endpoint_auth_method:'none',grant_types:['authorization_code'],response_types:['code']});assert.equal(registration.status,201);const client=await registration.json();

@@ -1,5 +1,5 @@
 import { test, expect, type APIRequestContext, type Page } from '@playwright/test';
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { startFoldy } from '../lib/playwright/foldy-runtime.js';
 
@@ -24,6 +24,7 @@ async function connect(request: APIRequestContext, url: string, token: string) {
 }
 async function claim(page:Page,runtime:Awaited<ReturnType<typeof startFoldy>>) {
  await page.goto(runtime.url+'/owner');await page.getByLabel('One-use owner key').fill(runtime.assertion);
+ await page.getByLabel('New owner password').fill(randomBytes(24).toString('hex'));
  await page.getByRole('button',{name:'Claim ownership',exact:true}).click();
 }
 async function publish(page:Page,url:string,title:string,before:string,after:string) {

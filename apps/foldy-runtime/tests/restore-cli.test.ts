@@ -48,7 +48,7 @@ test('fresh restore, durable replay denial, startup claim and explicit policy be
  const launch=async()=>{child=spawn(process.execPath,[resolve('dist/main.js')],{env,stdio:['ignore','pipe','pipe']});let logs='';child.stdout!.on('data',c=>logs+=c);child.stderr!.on('data',c=>logs+=c);for(let n=0;n<150;n++){const m=logs.match(/FOLDY_LISTENING (\d+)/);if(m)return 'http://127.0.0.1:'+m[1];if(child.exitCode!==null)break;await new Promise(r=>setTimeout(r,20));}assert.fail('runtime startup failed');};
  let url=await launch();assert.equal((await fetch(url+'/')).status,423);
  const post=(path:string,body:unknown,cookie='')=>fetch(url+path,{method:'POST',headers:{origin:url,'content-type':'application/json',cookie},body:JSON.stringify(body)});
- const claim=await post('/api/claim',{assertion});assert.equal(claim.status,200);const cookie=claim.headers.get('set-cookie')!.split(';')[0];assert.equal((await fetch(url+'/')).status,423);
+ const claim=await post('/api/claim',{assertion,password:randomBytes(24).toString('hex')});assert.equal(claim.status,200);const cookie=claim.headers.get('set-cookie')!.split(';')[0];assert.equal((await fetch(url+'/')).status,423);
  assert.equal((await post('/api/mcp-grants',{},cookie)).status,423);
  assert.equal((await post('/api/operations',{name:'get_file',arguments:{projectId:'p',path:'index.html'}},cookie)).status,423);
  assert.equal((await fetch(url+'/api/backup',{headers:{cookie}})).status,423);

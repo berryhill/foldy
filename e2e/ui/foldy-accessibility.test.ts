@@ -1,6 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { AxeBuilder } from '@axe-core/playwright';
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { startFoldy } from '../lib/playwright/foldy-runtime.js';
 
 async function check(page: Page) {
@@ -19,6 +19,7 @@ test('claim, review and password unlock have accessible landmarks, labels and co
     await expect(page.getByRole('heading', { name: 'Claim your Foldy' })).toBeVisible();
     await check(page);
     await page.getByLabel('One-use owner key').fill(runtime.assertion);
+    await page.getByLabel('New owner password').fill(randomBytes(24).toString('hex'));
     await page.getByRole('button', { name: 'Claim ownership' }).click();
     await expect(page.getByRole('heading', { name: 'Review what’s next' })).toBeVisible();
     await check(page);

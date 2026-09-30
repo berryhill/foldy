@@ -33,7 +33,7 @@ test('viewer HTTP lifecycle, all bytes gated, origin/schema and authority separa
  for(const [path,mediaType,content] of members){writeFileSync(join(f.bundle,path),content);f.manifest.members.push({path,mediaType,bytes:Buffer.byteLength(content),sha256:hash(content),executableMode:0});}
  const raw=JSON.stringify(f.manifest);writeFileSync(join(f.bundle,'manifest.json'),raw);f.env.FOLDY_BUNDLE_DIGEST=hash(raw);
  p=await launch(f);const u=p.url;
- const claimed=await post(u+'/api/claim',{assertion:f.assertion});const owner={cookie:claimed.headers.get('set-cookie')!.split(';')[0],origin:u};
+ const claimed=await post(u+'/api/claim',{assertion:f.assertion,password:randomBytes(24).toString('hex')});const owner={cookie:claimed.headers.get('set-cookie')!.split(';')[0],origin:u};
  const request=async(path:string,value:unknown,headers:Record<string,string>={origin:u})=>{const r=await post(u+path,value,headers);assert.equal(r.headers.get('cache-control'),'no-store');return r;};
  const configure=(value:unknown,headers=owner)=>request('/api/owner/viewer-access',value,headers);
  assert.equal((await fetch(u+'/')).status,200);
@@ -70,7 +70,7 @@ test('viewer HTTP lifecycle, all bytes gated, origin/schema and authority separa
 
 test('cache configuration fails closed and forwarded sources cannot evade ingress',async()=>{
  const f=fixture();f.env.FOLDY_EXTERNAL_CACHE_ENABLED='1';let p:Awaited<ReturnType<typeof launch>>|undefined;
- try{p=await launch(f);const u=p.url;const claimed=await post(u+'/api/claim',{assertion:f.assertion});const owner={cookie:claimed.headers.get('set-cookie')!.split(';')[0],origin:u};
+ try{p=await launch(f);const u=p.url;const claimed=await post(u+'/api/claim',{assertion:f.assertion,password:randomBytes(24).toString('hex')});const owner={cookie:claimed.headers.get('set-cookie')!.split(';')[0],origin:u};
  const r=await post(u+'/api/owner/viewer-access',{mode:'password_required',password:randomBytes(24).toString('hex')},owner);assert.equal(r.status,400);assert.equal((await r.json()).code,'CACHE_UNAVAILABLE');
  assert.equal((await fetch(u+'/')).status,401);assert.equal((await (await fetch(u+'/api/viewer-access')).json()).mode,'unavailable');
  for(let i=0;i<21;i++){const response=await post(u+'/api/viewer/unlock',{password:randomBytes(24).toString('hex')},{origin:u,'x-forwarded-for':`192.0.2.${i}`,forwarded:`for=192.0.2.${i}`});assert.equal(response.status,i<20?503:429);assert.equal(response.headers.get('cache-control'),'no-store');}
@@ -81,6 +81,13 @@ test('bounded ingress uses finite buckets and expiring budgets',async()=>{
  const {sourceLimiter}=await import('../dist/viewer-http.js');let now=0;const allow=sourceLimiter(()=>now,2,2);
  assert.equal(await allow('source-a'),true);assert.equal(await allow('source-a'),true);assert.equal(await allow('source-a'),false);
  assert.equal(await allow('source-b'),true);assert.equal(await allow('source-c'),false);now=60001;assert.equal(await allow('source-c'),true);
+});
+test('owner login limiter admits a fresh credential after old buckets fill without altering viewer default',async()=>{
+ const {sourceLimiter}=await import('../dist/viewer-http.js');
+ const allow=sourceLimiter(()=>0,2,1,true);
+ assert.equal(await allow('guess-a'),true);assert.equal(await allow('guess-b'),true);
+ assert.equal(await allow('guess-a'),false);
+ assert.equal(await allow('valid-owner'),true);
 });
 
 test('restored content stays sealed through claim and restart until explicit access choice',async()=>{
@@ -95,7 +102,7 @@ test('restored content stays sealed through claim and restart until explicit acc
  try{
   p=await launch(f);
   assert.equal((await fetch(p.url+'/')).status,423);
-  const claimed=await post(p.url+'/api/claim',{assertion:f.assertion});
+  const claimed=await post(p.url+'/api/claim',{assertion:f.assertion,password:randomBytes(24).toString('hex')});
   const cookie=claimed.headers.get('set-cookie')!.split(';')[0];
   assert.equal((await claimed.json()).state,'ACCESS_CONFIGURATION_REQUIRED');
   for(const path of ['/','/index.html'])assert.equal((await fetch(p.url+path)).status,423);

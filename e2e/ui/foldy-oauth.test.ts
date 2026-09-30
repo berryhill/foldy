@@ -16,6 +16,7 @@ test('cross-site entry with Strict owner cookie requires same-origin continuatio
  try {
   await page.goto(runtime.url+'/owner');
   await page.getByLabel('One-use owner key').fill(runtime.assertion);
+  await page.getByLabel('New owner password').fill(randomBytes(24).toString('hex'));
   await page.getByRole('button',{name:'Claim ownership',exact:true}).click();
   await expect(page.getByRole('heading',{name:'Review what’s next'})).toBeVisible();
   expect((await context.cookies()).find(c=>c.name==='__Host-foldy-owner')?.sameSite).toBe('Strict');

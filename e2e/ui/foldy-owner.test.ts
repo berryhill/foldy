@@ -8,7 +8,7 @@ test('stale competing proposals refresh safely, request review and close with hi
  const errors:string[]=[];page.on('pageerror',e=>errors.push(e.message));page.on('dialog',d=>d.accept());
  const op=async(name:string,args:Record<string,unknown>={})=>{const r=await context.request.post(runtime.url+'/api/operations',{headers:{origin:runtime.url},data:{name,arguments:args}});expect(r.status()).toBe(200);return r.json();};
  try{
-  await page.goto(runtime.url+'/owner');await page.getByLabel('One-use owner key').fill(runtime.assertion);await page.getByRole('button',{name:'Claim ownership',exact:true}).click();await expect(page.getByRole('heading',{name:'Review what’s next'})).toBeVisible();
+  await page.goto(runtime.url+'/owner');await page.getByLabel('One-use owner key').fill(runtime.assertion);await page.getByLabel('New owner password').fill(randomBytes(24).toString('hex'));await page.getByRole('button',{name:'Claim ownership',exact:true}).click();await expect(page.getByRole('heading',{name:'Review what’s next'})).toBeVisible();
   const create=async(title:string)=>{const r=await op('create_update',{projectId:'project-1',expectedBaseRevisionId:'revision-1',title,idempotencyKey:randomUUID()});return {projectId:'project-1',expectedBaseRevisionId:'revision-1',updateId:r.updateId,expectedUpdateRevisionId:r.updateRevisionId};};
   const a=await create('Published competitor'),b=await create('Refreshable proposal'),c=await create('Conflicting proposal');
   const edit=async(ref:typeof a,name:string,extra:Record<string,unknown>)=>{const r=await op(name,{...ref,...extra,idempotencyKey:randomUUID()});ref.expectedUpdateRevisionId=r.updateRevisionId;return r;};
@@ -51,6 +51,7 @@ test('changes requested returns owner review to the submit gate', async ({browse
  };
  try{
   await page.goto(runtime.url+'/owner');await page.getByLabel('One-use owner key').fill(runtime.assertion);
+  await page.getByLabel('New owner password').fill(randomBytes(24).toString('hex'));
   await page.getByRole('button',{name:'Claim ownership',exact:true}).click();
   await expect(page.getByRole('heading',{name:'Review what’s next'})).toBeVisible();
   const base={projectId:'project-1',expectedBaseRevisionId:'revision-1'};
@@ -94,6 +95,8 @@ test('standalone owner keyboard claim, review, publication and reader separation
   expect(await page.getByLabel('One-use owner key').evaluate(e=>getComputedStyle(e).outlineStyle)).not.toBe('none');
   await snapshot(page,'claim-desktop');
   await page.keyboard.insertText(runtime.assertion);
+  const ownerPassword=randomBytes(24).toString('hex');
+  await page.getByLabel('New owner password').fill(ownerPassword);
   const claimed=page.waitForResponse(r=>new URL(r.url()).pathname==='/api/claim'&&r.request().method()==='POST');
   await page.keyboard.press('Enter'); expect((await claimed).status()).toBe(200);
   await expect(page.getByRole('heading',{name:'Review what’s next'})).toBeVisible();
@@ -168,7 +171,7 @@ test('standalone owner keyboard claim, review, publication and reader separation
   await reader.keyboard.press('Enter');expect((await unlocked).status()).toBe(200);
   await expect(reader.getByRole('heading',{name:'Published welcome'})).toBeVisible();
   expect((await viewer.request.post(runtime.url+'/api/operations',{headers:{origin:runtime.url},data:{name:'list_updates',arguments:{}}})).status()).toBe(401);
-  await reader.goto(runtime.url+'/owner');await expect(reader.getByRole('heading',{name:'Claim your Foldy'})).toBeVisible();
+  await reader.goto(runtime.url+'/owner');await expect(reader.getByRole('heading',{name:'Sign in as owner'})).toBeVisible();
   await reader.goto(runtime.url+'/unlock');
   const loggedOut=reader.waitForResponse(r=>new URL(r.url()).pathname==='/api/viewer/logout'&&r.request().method()==='POST');
   await reader.getByRole('button',{name:'Log out of viewing',exact:true}).click();
@@ -177,7 +180,13 @@ test('standalone owner keyboard claim, review, publication and reader separation
   const ownerLoggedOut=page.waitForResponse(r=>new URL(r.url()).pathname==='/api/owner/logout'&&r.request().method()==='POST');
   await page.getByRole('button',{name:'Log out of owner workspace',exact:true}).click();
   expect((await ownerLoggedOut).status()).toBe(200);
-  await expect(page.getByRole('heading',{name:'Claim your Foldy'})).toBeVisible();
+  await expect(page.getByRole('heading',{name:'Sign in as owner'})).toBeVisible();
+  await page.getByLabel('Owner password',{exact:true}).fill(password);
+  await page.getByRole('button',{name:'Sign in',exact:true}).click();
+  await expect(page.getByRole('status')).toContainText('not accepted');
+  await page.getByLabel('Owner password',{exact:true}).fill(ownerPassword);
+  await page.getByRole('button',{name:'Sign in',exact:true}).click();
+  await expect(page.getByRole('heading',{name:'Review what’s next'})).toBeVisible();
   expect(errors).toEqual([]);
  } finally {
   writeFileSync(info.outputPath('browser-diagnostics.json'),JSON.stringify({pageErrors:errors,consoleErrors},null,2));
@@ -193,7 +202,7 @@ test('authored preview is inert, isolated and uses revision-local styles', async
  const runtime=await startFoldy();const context=await browser.newContext({ignoreHTTPSErrors:true});const page=await context.newPage();
  const unexpected:string[]=[];
  try{
-  await page.goto(runtime.url+'/owner');await page.getByLabel('One-use owner key').fill(runtime.assertion);await page.getByRole('button',{name:'Claim ownership',exact:true}).click();
+  await page.goto(runtime.url+'/owner');await page.getByLabel('One-use owner key').fill(runtime.assertion);await page.getByLabel('New owner password').fill(randomBytes(24).toString('hex'));await page.getByRole('button',{name:'Claim ownership',exact:true}).click();
   await expect(page.getByRole('heading',{name:'Review what’s next'})).toBeVisible();
   const op=async(name:string,args:Record<string,unknown>)=>{const r=await context.request.post(runtime.url+'/api/operations',{headers:{origin:runtime.url},data:{name,arguments:args}});expect(r.status()).toBe(200);return r.json();};
   const base={projectId:'project-1',expectedBaseRevisionId:'revision-1'};

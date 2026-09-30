@@ -30,7 +30,7 @@ test('owner-only preview serves immutable candidate assets without switching the
  try{
   p=await launch(f);const u=p.url;
   assert.equal((await fetch(u+'/_preview/update/revision/')).status,423);
-  const claim=await post(u+'/api/claim',{assertion:f.assertion});assert.equal(claim.status,200);
+  const claim=await post(u+'/api/claim',{assertion:f.assertion,password:randomBytes(24).toString('hex')});assert.equal(claim.status,200);
   const owner={cookie:claim.headers.get('set-cookie')!.split(';')[0],origin:u};
   const op=async(name:string,args:Record<string,unknown>)=>{const r=await post(u+'/api/operations',{name,arguments:args},owner);assert.equal(r.status,200,name);return r.json();};
   const base={projectId:'project-1',expectedBaseRevisionId:'revision-1'};

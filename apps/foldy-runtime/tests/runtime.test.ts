@@ -36,10 +36,10 @@ test('sealed bootstrap, owner/viewer/MCP separation, real protocol, immutable by
  assert.equal((await fetch(u+'/api/readiness')).status,401);
  assert.equal((await post(u+'/api/claim',{})).status,401);
  assert.equal((await fetch(u+'/mcp')).status,423);
- const claimed=await post(u+'/api/claim',{assertion:f.assertion}); assert.equal(claimed.status,200);
+ const claimed=await post(u+'/api/claim',{assertion:f.assertion,password:randomBytes(24).toString('hex')}); assert.equal(claimed.status,200);
  const cookie=claimed.headers.get('set-cookie')!; assert.match(cookie,/Secure/); assert.match(cookie,/HttpOnly/); assert.match(cookie,/SameSite=Strict/);
  const owner={cookie:cookie.split(';')[0]};
- assert.equal((await post(u+'/api/claim',{assertion:f.assertion})).status,409);
+ assert.equal((await post(u+'/api/claim',{assertion:f.assertion,password:randomBytes(24).toString('hex')})).status,409);
  assert.equal((await fetch(u+'/api/readiness',{headers:owner})).status,200);
  assert.equal(await (await fetch(u+'/')).text(),'<!doctype html><h1>Immutable Foldy</h1>');
  const rival=spawn(process.execPath,[resolve('dist/main.js')],{env:f.env,stdio:'ignore'});
@@ -72,14 +72,14 @@ test('sealed bootstrap, owner/viewer/MCP separation, real protocol, immutable by
  assert.ok(!p.logs().includes(f.assertion)); assert.ok(!p.logs().includes(grant.token));
  const exit=once(p.child,'exit');p.child.kill(); await exit;
  writeFileSync(join(f.bundle,'index.html'),'<!doctype html><h1>Immutable Foldy</h1>');
- p=await launch(f); assert.equal((await post(p.url+'/api/claim',{assertion:f.assertion})).status,409);
+ p=await launch(f); assert.equal((await post(p.url+'/api/claim',{assertion:f.assertion,password:randomBytes(24).toString('hex')})).status,409);
  } finally {p?.child.kill();rmSync(f.root,{recursive:true,force:true});}
 });
 test('versioned public tool snapshot matches effective read/draft tools and owner operation contract',async()=>{
  const f=fixture();let p:Awaited<ReturnType<typeof launch>>|undefined;
  try{
   p=await launch(f);const origin=p.url;
-  const claim=await post(origin+'/api/claim',{assertion:f.assertion});const owner={cookie:claim.headers.get('set-cookie')!.split(';')[0],origin};
+  const claim=await post(origin+'/api/claim',{assertion:f.assertion,password:randomBytes(24).toString('hex')});const owner={cookie:claim.headers.get('set-cookie')!.split(';')[0],origin};
   const manifest=await (await fetch(origin+'/mcp/manifest.json')).json();
   assert.equal(manifest.toolContractVersion,'foldy-tool-contract.v2');
   assert.ok(Array.isArray(manifest.capabilities.toolSchemas));
@@ -132,7 +132,7 @@ test('owner status and diagnostics expose durable backup evidence but no content
  try {
  p=await launch(f);
  for(const path of ['/api/owner/status','/api/owner/diagnostics'])assert.equal((await fetch(p.url+path)).status,401);
- const claimed=await post(p.url+'/api/claim',{assertion:f.assertion});const owner={cookie:claimed.headers.get('set-cookie')!.split(';')[0]};
+ const claimed=await post(p.url+'/api/claim',{assertion:f.assertion,password:randomBytes(24).toString('hex')});const owner={cookie:claimed.headers.get('set-cookie')!.split(';')[0]};
  const initial=await(await fetch(p.url+'/api/owner/status',{headers:owner})).json();assert.equal(initial.operations.lastBackup,null);assert.equal(initial.lease.state,'unverified');
  assert.equal((await fetch(p.url+'/api/backup',{headers:owner})).status,200);
  const invalid=await post(p.url+'/api/operations',{name:'unknown',arguments:{}},owner);assert.equal(invalid.status,400);const failed=await invalid.json();
@@ -145,7 +145,7 @@ test('owner status and diagnostics expose durable backup evidence but no content
 });
 test('expired protected bootstrap remains SEALED',async()=>{
  const f=fixture();let p:Awaited<ReturnType<typeof launch>>|undefined;
- try{writeFileSync(join(f.root,'bootstrap.json'),JSON.stringify({instanceId:'instance-1',verifier:hash(f.assertion),expiresAt:Date.now()-1}),{mode:0o600});p=await launch(f);assert.equal((await post(p.url+'/api/claim',{assertion:f.assertion})).status,401);assert.equal((await fetch(p.url+'/')).status,423);}finally{p?.child.kill();rmSync(f.root,{recursive:true,force:true});}
+ try{writeFileSync(join(f.root,'bootstrap.json'),JSON.stringify({instanceId:'instance-1',verifier:hash(f.assertion),expiresAt:Date.now()-1}),{mode:0o600});p=await launch(f);assert.equal((await post(p.url+'/api/claim',{assertion:f.assertion,password:randomBytes(24).toString('hex')})).status,401);assert.equal((await fetch(p.url+'/')).status,423);}finally{p?.child.kill();rmSync(f.root,{recursive:true,force:true});}
 });
 for(const corruption of ['hash','traversal','symlink','undeclared','bootstrap-leak'] as const) test(`reject ${corruption} bundle before listening`,async()=>{
  const f=fixture();
@@ -163,7 +163,7 @@ for(const corruption of ['hash','traversal','symlink','undeclared','bootstrap-le
 test('MCP draft and owner publish share persistent domain and change live bytes',async()=>{
  const f=fixture();let p:Awaited<ReturnType<typeof launch>>|undefined;
  try{
- p=await launch(f);const claimed=await post(p.url+'/api/claim',{assertion:f.assertion});const owner={cookie:claimed.headers.get('set-cookie')!.split(';')[0]};
+ p=await launch(f);const claimed=await post(p.url+'/api/claim',{assertion:f.assertion,password:randomBytes(24).toString('hex')});const owner={cookie:claimed.headers.get('set-cookie')!.split(';')[0]};
  assert.equal((await post(p.url+'/api/mcp-grants',{scopes:['foldy:read','foldy:publish']},owner)).status,400);
  const grant=await (await post(p.url+'/api/mcp-grants',{scopes:['foldy:read','foldy:draft:write']},owner)).json();
  const auth={authorization:`Bearer ${grant.token}`,accept:'application/json, text/event-stream'};

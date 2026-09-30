@@ -1,9 +1,10 @@
 import { randomBytes, randomUUID, createHash } from 'node:crypto';
 import { constants, lstatSync, openSync, closeSync, readFileSync, writeFileSync, fsyncSync, renameSync, unlinkSync, existsSync, fstatSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
+import { deriveOwnerPassword, verifyOwnerPassword, validOwnerPasswordVerifier, type OwnerPasswordVerifier } from './owner-password.js';
 
 export type Grant = { grantId: string; verifier: string; expiresAt: number; scopes?: string[] };
-export type AuthorityState = { instanceId: string; bundleDigest: string; ownerVerifier: string; ownerExpiresAt: number; generation: number; grants: Grant[] };
+export type AuthorityState = { instanceId: string; bundleDigest: string; ownerVerifier: string; ownerExpiresAt: number; generation: number; grants: Grant[]; ownerPassword?: OwnerPasswordVerifier };
 const MAX_AUTHORITY_BYTES = 1024 * 1024;
 const hash = (s: string) => createHash('sha256').update(s).digest('hex');
 const verifier = (v: unknown): v is string => typeof v === 'string' && /^[a-f0-9]{64}$/.test(v);
@@ -61,7 +62,7 @@ export class OwnerAuthority {
   private now() { return this.options.now?.() ?? Date.now(); }
   get state() { return this.current ? structuredClone(this.current) : undefined; }
   private validate(v: any): AuthorityState {
-    if (!record(v) || !exact(v, ['instanceId','bundleDigest','ownerVerifier','ownerExpiresAt','generation','grants']) || v.instanceId !== this.options.instanceId || v.bundleDigest !== this.options.bundleDigest || !verifier(v.ownerVerifier) || !time(v.ownerExpiresAt) || !time(v.generation) || !Array.isArray(v.grants) || v.grants.length > 10000) invalid();
+    if (!record(v) || !exact(v, ['instanceId','bundleDigest','ownerVerifier','ownerExpiresAt','generation','grants','ownerPassword']) || v.instanceId !== this.options.instanceId || v.bundleDigest !== this.options.bundleDigest || !verifier(v.ownerVerifier) || !time(v.ownerExpiresAt) || !time(v.generation) || !Array.isArray(v.grants) || v.grants.length > 10000 || (v.ownerPassword !== undefined && !validOwnerPasswordVerifier(v.ownerPassword))) invalid();
     const ids = new Set<string>();
     for (const g of v.grants) {
       if (!record(g) || !exact(g,['grantId','verifier','expiresAt','scopes']) || typeof g.grantId !== 'string' || !g.grantId || ids.has(g.grantId) || !verifier(g.verifier) || !time(g.expiresAt) || (g.scopes !== undefined && (!Array.isArray(g.scopes) || !g.scopes.includes('foldy:read') || g.scopes.some((s: unknown) => s !== 'foldy:read' && s !== 'foldy:draft:write')))) invalid();
@@ -96,10 +97,10 @@ export class OwnerAuthority {
     const token = cookie?.split(';').map(s => s.trim()).find(s => s.startsWith('__Host-foldy-owner='))?.slice('__Host-foldy-owner='.length);
     return !!(token && token.length <= 256 && this.current && this.current.ownerExpiresAt > this.now() && hash(token) === this.current.ownerVerifier);
   }
-  private rotate() {
+  private rotate(ownerPassword?: OwnerPasswordVerifier) {
     const token = randomBytes(32).toString('base64url');
     const generation = (this.current?.generation ?? 0) + 1;
-    this.persist({ instanceId: this.options.instanceId, bundleDigest: this.options.bundleDigest, generation, ownerVerifier: hash(token), ownerExpiresAt: this.now() + 12 * 3600000, grants: [] });
+    this.persist({ instanceId: this.options.instanceId, bundleDigest: this.options.bundleDigest, generation, ownerVerifier: hash(token), ownerExpiresAt: this.now() + 12 * 3600000, grants: [], ...(ownerPassword ? { ownerPassword } : {}) });
     this.bootstrap = undefined;
     return token;
   }
@@ -108,10 +109,36 @@ export class OwnerAuthority {
     if (!this.assertion(input) || !this.bootstrap || this.now() >= this.bootstrap.expiresAt || hash(input.assertion) !== this.bootstrap.verifier) throw Error('AUTH_INVALID');
     return this.rotate();
   }
+  async claimWithPassword(input: unknown): Promise<string> {
+    if (this.current) throw Error('ALREADY_CLAIMED');
+    if (!record(input) || !exact(input, ['assertion','password']) || Object.keys(input).length !== 2 || !this.assertion({ assertion: input.assertion })
+      || !this.bootstrap || this.now() >= this.bootstrap.expiresAt || hash(input.assertion) !== this.bootstrap.verifier) throw Error('AUTH_INVALID');
+    const ownerPassword = await deriveOwnerPassword(input.password);
+    if (this.current || !this.bootstrap || this.now() >= this.bootstrap.expiresAt || hash(input.assertion) !== this.bootstrap.verifier) throw Error('AUTH_INVALID');
+    return this.rotate(ownerPassword);
+  }
+  async login(input: unknown): Promise<string> {
+    if (!record(input) || !exact(input, ['password']) || Object.keys(input).length !== 1 || !this.current?.ownerPassword) throw Error('AUTH_INVALID');
+    const snapshot = this.current, generation = snapshot.generation, ownerPassword = structuredClone(snapshot.ownerPassword);
+    if (!await verifyOwnerPassword(input.password, ownerPassword)) throw Error('AUTH_INVALID');
+    if (!this.current || this.current.generation !== generation || JSON.stringify(this.current.ownerPassword) !== JSON.stringify(ownerPassword)) throw Error('AUTH_INVALID');
+    const token = randomBytes(32).toString('base64url');
+    this.persist({ ...this.current, generation: generation + 1, ownerVerifier: hash(token), ownerExpiresAt: this.now() + 12 * 3600000 });
+    return token;
+  }
+  async setPassword(cookie: string | undefined, password: unknown): Promise<string> {
+    if (!this.ownerCookie(cookie) || !this.current) throw Error('AUTH_INVALID');
+    const generation = this.current.generation;
+    const ownerPassword = await deriveOwnerPassword(password);
+    if (!this.ownerCookie(cookie) || !this.current || this.current.generation !== generation) throw Error('AUTH_INVALID');
+    const token = randomBytes(32).toString('base64url');
+    this.persist({ ...this.current, generation: generation + 1, ownerPassword, ownerVerifier: hash(token), ownerExpiresAt: this.now() + 12 * 3600000 });
+    return token;
+  }
   private assertion(v: unknown): v is { assertion: string } {
     return record(v) && exact(v, ['assertion']) && typeof v.assertion === 'string' && v.assertion.length >= 32 && v.assertion.length <= 256;
   }
-  recover(input: unknown) {
+  private validateRecovery(input: unknown) {
     if (!this.current || !this.options.recoveryFile || !this.assertion(input)) throw Error('AUTH_INVALID');
     // Only the deploying principal can install this authorization. The runtime
     // does not issue it from public metadata, the old assertion, or a password.
@@ -119,7 +146,18 @@ export class OwnerAuthority {
     if (!record(r) || !exact(r, ['schemaVersion','instanceId','bundleDigest','generation','nonce','verifier','expiresAt']) || r.schemaVersion !== 'foldy-owner-recovery.v1' || r.instanceId !== this.options.instanceId || r.bundleDigest !== this.options.bundleDigest || r.generation !== this.current.generation || typeof r.nonce !== 'string' || !/^[a-f0-9]{64}$/.test(r.nonce) || !verifier(r.verifier) || !time(r.expiresAt) || r.expiresAt <= this.now() || r.expiresAt > this.now() + 900000 || this.options.rejectBundleVerifier?.(r.verifier) || hash(input.assertion) !== r.verifier) throw Error('AUTH_INVALID');
     // A single fsynced state replacement both consumes the expected generation
     // and revokes all owner/MCP authority. File deletion is not replay custody.
+  }
+  recover(input: unknown) {
+    if (this.current?.ownerPassword) throw Error('AUTH_INVALID');
+    this.validateRecovery(input);
     return this.rotate();
+  }
+  async recoverWithPassword(input: unknown): Promise<string> {
+    if (!record(input) || !exact(input, ['assertion','password']) || Object.keys(input).length !== 2) throw Error('AUTH_INVALID');
+    this.validateRecovery({ assertion: input.assertion });
+    const ownerPassword = await deriveOwnerPassword(input.password);
+    this.validateRecovery({ assertion: input.assertion });
+    return this.rotate(ownerPassword);
   }
   logout() {
     if (!this.current) throw Error('AUTH_INVALID');

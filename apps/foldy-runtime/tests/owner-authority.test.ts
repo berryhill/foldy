@@ -18,8 +18,52 @@ function fixture(){
  return {root,options,assertion,authorization};
 }
 function oauthGrants(count: number, expiresAt = Date.now() + 600000) {
- return Array.from({length:count},(_,i)=>({grantId:`oauth:${hash('resource')}:${hash('client')}:${String(i).padStart(36,'0')}`,verifier:hash('test-only'),expiresAt,scopes:['foldy:read','foldy:draft:write']}));
+  return Array.from({length:count},(_,i)=>({grantId:`oauth:${hash('resource')}:${hash('client')}:${String(i).padStart(36,'0')}`,verifier:hash('test-only'),expiresAt,scopes:['foldy:read','foldy:draft:write']}));
 }
+test('claimed owner password permits later login without revoking grants; recovery replaces it',async()=>{
+ const f=fixture();const password=opaque(),replacement=opaque();
+ try{
+  const a=new OwnerAuthority(f.options);
+  await assert.rejects(a.claimWithPassword({assertion:'wrong',password}));
+  assert.equal(a.state,undefined);
+  const original=await a.claimWithPassword({assertion:f.assertion,password});
+  assert.equal(a.ownerCookie(`__Host-foldy-owner=${original}`),true);
+  const bytes=readFileSync(join(f.options.directory,'authority.json'),'utf8');
+  assert.equal(bytes.includes(password),false);
+  assert.equal(a.state!.ownerPassword?.algorithm,'argon2id');
+  const grant=oauthGrants(1)[0];a.persist({...a.state!,grants:[grant]});
+  a.logout();assert.equal(a.ownerCookie(`__Host-foldy-owner=${original}`),false);
+  await assert.rejects(a.login({password:replacement}));
+  const loggedIn=await a.login({password});
+  assert.equal(a.ownerCookie(`__Host-foldy-owner=${loggedIn}`),true);
+  assert.deepEqual(a.state!.grants,[grant]);
+  const recovery=f.authorization(a);
+  const reset=await a.recoverWithPassword({assertion:recovery,password:replacement});
+  assert.equal(a.ownerCookie(`__Host-foldy-owner=${loggedIn}`),false);
+  assert.equal(a.ownerCookie(`__Host-foldy-owner=${reset}`),true);
+  assert.deepEqual(a.state!.grants,[]);
+  await assert.rejects(a.login({password}));
+  await assert.rejects(a.recoverWithPassword({assertion:recovery,password:replacement}));
+  a.logout();assert.equal(a.ownerCookie(`__Host-foldy-owner=${await a.login({password:replacement})}`),true);
+ }finally{rmSync(f.root,{recursive:true,force:true});}
+});
+test('legacy claimed owner sets a password without changing content or MCP grants',async()=>{
+ const f=fixture(),password=opaque();
+ try{
+  const a=new OwnerAuthority(f.options),legacy=a.claim({assertion:f.assertion});
+  const grant=oauthGrants(1)[0];a.persist({...a.state!,grants:[grant]});
+  await assert.rejects(a.setPassword('__Host-foldy-viewer=untrusted',password));
+  const rotated=await a.setPassword(`__Host-foldy-owner=${legacy}`,password);
+  assert.deepEqual(a.state!.grants,[grant]);
+  assert.equal(a.ownerCookie(`__Host-foldy-owner=${legacy}`),false);
+  assert.equal(a.ownerCookie(`__Host-foldy-owner=${rotated}`),true);
+  a.logout();
+  const restarted=new OwnerAuthority(f.options);
+  const session=await restarted.login({password});
+  assert.equal(restarted.ownerCookie(`__Host-foldy-owner=${session}`),true);
+  assert.deepEqual(restarted.state!.grants,[grant]);
+ }finally{rmSync(f.root,{recursive:true,force:true});}
+});
 for (const nearLimit of [false,true]) test(`oversized authority rejects atomically (${nearLimit?'near byte boundary':'4000 OAuth grants'})`,()=>{
  const f=fixture();try{
  const a=new OwnerAuthority(f.options);const owner=a.claim({assertion:f.assertion});
@@ -85,14 +129,14 @@ test('HTTP recovery after expiry, CSRF rejection, durable replay and logout',asy
  const raw=JSON.stringify({schemaVersion:'foldy-release-bundle.v1',instanceId:'instance-1',projectId:'project-1',workbookId:'workbook-1',revisionId:'revision-1',runtimeImageDigest:`sha256:${'a'.repeat(64)}`,members:[{path:'index.html',mediaType:'text/html',bytes:Buffer.byteLength(html),sha256:hash(html),executableMode:0}]});writeFileSync(join(bundle,'manifest.json'),raw);f.options.bundleDigest=hash(raw);
  const launch=async()=>{logs='';child=spawn(process.execPath,[resolve('dist/main.js')],{env:{...process.env,FOLDY_BUNDLE_DIR:bundle,FOLDY_BUNDLE_DIGEST:hash(raw),FOLDY_STATE_DIR:f.options.directory,FOLDY_BOOTSTRAP_FILE:f.options.bootstrapFile,FOLDY_OWNER_RECOVERY_FILE:f.options.recoveryFile,FOLDY_DEV_LOOPBACK:'1',FOLDY_PORT:'0'},stdio:['ignore','pipe','pipe']});child.stdout!.on('data',c=>logs+=c);child.stderr!.on('data',c=>logs+=c);for(let i=0;i<100;i++){const m=logs.match(/FOLDY_LISTENING (\d+)/);if(m)return `http://127.0.0.1:${m[1]}`;if(child.exitCode!==null)break;await new Promise(r=>setTimeout(r,20));}throw Error('TEST_START_FAILED');};
  let url=await launch();const post=(path:string,input:unknown,headers:Record<string,string>={})=>fetch(url+path,{method:'POST',headers:{'content-type':'application/json',origin:url,...headers},body:JSON.stringify(input)});
- const claim=await post('/api/claim',{assertion:f.assertion});assert.equal(claim.status,200);const old=claim.headers.get('set-cookie')!.split(';')[0];
+ const claim=await post('/api/claim',{assertion:f.assertion,password:opaque()});assert.equal(claim.status,200);const old=claim.headers.get('set-cookie')!.split(';')[0];
  const grant=await(await post('/api/mcp-grants',{}, {cookie:old})).json();
  await stop();const statePath=join(f.options.directory,'authority.json');const state=JSON.parse(readFileSync(statePath,'utf8'));state.ownerExpiresAt=Date.now()-1;writeFileSync(statePath,JSON.stringify(state));
  const a=new OwnerAuthority(f.options);const recovery=f.authorization(a);rmSync(f.options.bootstrapFile);url=await launch();
  assert.equal((await fetch(url+'/api/readiness',{headers:{cookie:old}})).status,401);
  assert.equal((await post('/api/owner/recover',{assertion:recovery},{origin:'https://other.invalid'})).status,403);
  assert.equal((await post('/api/owner/recover',{assertion:recovery},{origin:''})).status,403);
- const recovered=await post('/api/owner/recover',{assertion:recovery});assert.equal(recovered.status,200);const cookie=recovered.headers.get('set-cookie')!.split(';')[0];
+ const recovered=await post('/api/owner/recover',{assertion:recovery,password:opaque()});assert.equal(recovered.status,200);const cookie=recovered.headers.get('set-cookie')!.split(';')[0];
  assert.equal((await fetch(url+'/api/readiness',{headers:{cookie}})).status,200);
  assert.equal((await fetch(url+'/mcp',{headers:{authorization:`Bearer ${grant.token}`}})).status,401);
  assert.equal((await post('/api/owner/recover',{assertion:recovery})).status,401);

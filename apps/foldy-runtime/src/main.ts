@@ -1,6 +1,6 @@
 import { createServer as httpServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { createServer as httpsServer } from 'node:https';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { readFileSync, writeFileSync, lstatSync, mkdirSync, existsSync, openSync, closeSync, unlinkSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
@@ -41,8 +41,11 @@ async function main(){
  const dev=process.env.FOLDY_DEV_LOOPBACK==='1';
  function json(res:ServerResponse,status:number,value:unknown){res.writeHead(status,{'content-type':'application/json','cache-control':'no-store'});res.end(JSON.stringify(value));}
  function owner(req:IncomingMessage){return authority.ownerCookie(req.headers.cookie);}
- async function body(req:IncomingMessage){let size=0;const parts:Buffer[]=[];for await(const part of req){size+=part.length;if(size>65536)throw Error('REQUEST_INVALID');parts.push(part);}return JSON.parse(Buffer.concat(parts).toString());}
+ async function body(req:IncomingMessage,limit=65536){let size=0;const parts:Buffer[]=[];for await(const part of req){size+=part.length;if(size>limit)throw Error('REQUEST_INVALID');parts.push(part);}return JSON.parse(Buffer.concat(parts).toString());}
  const access=new ViewerAccess({instanceId:identity.instanceId,workbookId:identity.workbookId,directory:join(stateDir,'viewer-access'),authorizeOwner:async context=>owner(context as IncomingMessage)?{actorRef:'owner'}:null,invalidateCaches:async()=>process.env.FOLDY_EXTERNAL_CACHE_ENABLED==='0',allowSource:sourceLimiter()});
+ // Distinct credentials from a shared proxy must not spend the valid owner's
+ // rate bucket. The HMAC is process-local and never leaves this admission path.
+ const ownerAttemptKey=randomBytes(32),allowOwnerAttempt=sourceLimiter(Date.now,1024,5,true);
  const handler=async(req:IncomingMessage,res:ServerResponse)=>{
  const requestId=randomUUID();res.setHeader('x-request-id',requestId);
  try{
@@ -57,10 +60,32 @@ async function main(){
  const path=(req.url||'').split('?')[0];if(req.url?.includes('?'))return json(res,400,{code:'REQUEST_INVALID'});
  if(ownerUiRoute(req,res,path))return;
  if(path==='/api/health'&&req.method==='GET')return json(res,200,{live:true});
+ if(path==='/api/owner/access'&&req.method==='GET')return json(res,200,{claimed:!!getState(),passwordConfigured:!!getState()?.ownerPassword});
  if(path==='/api/claim'&&req.method==='POST'){
  if(getState())return json(res,409,{code:'ALREADY_CLAIMED'});
- let token:string;try{token=authority.claim(await body(req));}catch{return json(res,401,{code:'AUTH_INVALID'});}
+ if((req.headers.origin&&req.headers.origin!==origin)||!req.headers['content-type']?.startsWith('application/json')||(req.headers['sec-fetch-site']&&req.headers['sec-fetch-site']!=='same-origin'))return json(res,403,{code:'ORIGIN_INVALID'});
+ let token:string;try{token=await authority.claimWithPassword(await body(req,4096));}catch{return json(res,401,{code:'AUTH_INVALID'});}
  res.setHeader('set-cookie',`__Host-foldy-owner=${token}; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=43200`);return json(res,200,{state:domain.requiresAccessConfiguration()?'ACCESS_CONFIGURATION_REQUIRED':'READY'});
+ }
+ if(path==='/api/owner/login'){
+ if(req.method!=='POST')return json(res,405,{code:'METHOD_INVALID'});
+ if((req.headers.origin&&req.headers.origin!==origin)||!req.headers['content-type']?.startsWith('application/json')||(req.headers['sec-fetch-site']&&req.headers['sec-fetch-site']!=='same-origin'))return json(res,403,{code:'ORIGIN_INVALID'});
+ const input=await body(req,4096);
+ if(!input||typeof input!=='object'||Array.isArray(input)||Object.keys(input).length!==1||typeof input.password!=='string')return json(res,401,{code:'AUTH_INVALID'});
+ const candidate=createHmac('sha256',ownerAttemptKey).update(input.password).digest('hex');
+ if(!req.socket.remoteAddress||!await allowOwnerAttempt(req.socket.remoteAddress+':'+candidate))return json(res,429,{code:'RATE_LIMITED'});
+ let token:string;try{token=await authority.login(input);}catch{return json(res,401,{code:'AUTH_INVALID'});}
+ res.setHeader('set-cookie',`__Host-foldy-owner=${token}; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=43200`);return json(res,200,{authenticated:true});
+ }
+ if(path==='/api/owner/password'){
+ if(req.method!=='POST')return json(res,405,{code:'METHOD_INVALID'});
+ if(!owner(req))return json(res,401,{code:'AUTH_REQUIRED'});
+ if(req.headers.origin!==origin||!req.headers['content-type']?.startsWith('application/json'))return json(res,403,{code:'ORIGIN_INVALID'});
+ const input=await body(req,4096);
+ if(!input||typeof input!=='object'||Array.isArray(input)||Object.keys(input).length!==1||typeof input.password!=='string')return json(res,400,{code:'REQUEST_INVALID'});
+ let token:string;try{token=await authority.setPassword(req.headers.cookie,input.password);}catch{return json(res,401,{code:'AUTH_INVALID'});}
+ res.setHeader('set-cookie',`__Host-foldy-owner=${token}; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=43200`);
+ return json(res,200,{configured:true});
  }
  if(path==='/api/owner/recover'||path==='/api/owner/logout'){
  if(req.method!=='POST')return json(res,405,{code:'METHOD_INVALID'});
@@ -71,7 +96,7 @@ async function main(){
  if(!input||typeof input!=='object'||Array.isArray(input)||Object.keys(input).length)return json(res,400,{code:'REQUEST_INVALID'});
  authority.logout();res.setHeader('set-cookie','__Host-foldy-owner=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0');return json(res,200,{loggedOut:true});
  }
- let token:string;try{token=authority.recover(input);}catch{return json(res,401,{code:'AUTH_INVALID'});}
+ let token:string;try{token=await authority.recoverWithPassword(input);}catch{return json(res,401,{code:'AUTH_INVALID'});}
  const revoked=[...sessions.values()];sessions.clear();
  await Promise.allSettled(revoked.map(s=>s.transport.close()));
  res.setHeader('set-cookie',`__Host-foldy-owner=${token}; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=43200`);return json(res,200,{recovered:true});
@@ -84,13 +109,13 @@ async function main(){
  res.writeHead(200,{'content-type':'application/json; charset=utf-8','content-disposition':'attachment; filename="foldy-backup.json"','cache-control':'no-store','content-length':Buffer.byteLength(backup)});res.end(backup);return;
  }
  if(path==='/api/readiness'){
- if(!owner(req))return json(res,401,{code:'AUTH_REQUIRED'});probe();return json(res,200,{state:domain.requiresAccessConfiguration()?'ACCESS_CONFIGURATION_REQUIRED':'READY',instanceId:identity.instanceId,projectId:identity.projectId,workbookId:identity.workbookId,observedRevisionId:domain.current(),bundleDigest:bundle.bundleDigest,storage:'writable',bundle:'verified',mcp:'configured',scope:'runtime-slice-not-deployment-activation'});
+ if(!owner(req))return json(res,401,{code:'AUTH_REQUIRED'});probe();return json(res,200,{state:domain.requiresAccessConfiguration()?'ACCESS_CONFIGURATION_REQUIRED':'READY',ownerPasswordConfigured:!!getState()?.ownerPassword,instanceId:identity.instanceId,projectId:identity.projectId,workbookId:identity.workbookId,observedRevisionId:domain.current(),bundleDigest:bundle.bundleDigest,storage:'writable',bundle:'verified',mcp:'configured',scope:'runtime-slice-not-deployment-activation'});
  }
  if(path==='/api/owner/status'||path==='/api/owner/diagnostics'){
  if(!owner(req))return json(res,401,{code:'AUTH_REQUIRED'});
  if(req.method!=='GET')return json(res,405,{code:'METHOD_INVALID'});
  probe();const accessState=await access.status();
- const report={schemaVersion:'foldy-owner-status.v1',instanceId:identity.instanceId,projectId:identity.projectId,workbookId:identity.workbookId,runtimeVersion:'0.1.0',runtimeImageDigest:identity.runtimeImageDigest,currentPublishedRevisionId:domain.current(),storage:'writable',browserAccessMode:accessState.mode,lease:{state:'unverified'},operations:operations.snapshot(),backupMeaning:'prepared-not-download-or-restore-proof',requestId};
+ const report={schemaVersion:'foldy-owner-status.v1',instanceId:identity.instanceId,projectId:identity.projectId,workbookId:identity.workbookId,runtimeVersion:'0.1.0',runtimeImageDigest:identity.runtimeImageDigest,currentPublishedRevisionId:domain.current(),storage:'writable',browserAccessMode:accessState.mode,ownerPasswordConfigured:!!getState()?.ownerPassword,lease:{state:'unverified'},operations:operations.snapshot(),backupMeaning:'prepared-not-download-or-restore-proof',requestId};
  if(path==='/api/owner/diagnostics')res.setHeader('content-disposition','attachment; filename="foldy-diagnostics.json"');
  return json(res,200,report);
  }

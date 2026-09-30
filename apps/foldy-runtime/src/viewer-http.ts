@@ -9,7 +9,7 @@ export function viewerCookie(req: IncomingMessage): string | undefined {
 }
 /** Bounded, per-instance ingress budget; forwarded headers never select a bucket.
  * Keyed hashes are process-local and never logged or persisted as raw addresses. */
-export function sourceLimiter(clock = Date.now, capacity = 1024, budget = 20) {
+export function sourceLimiter(clock = Date.now, capacity = 1024, budget = 20, evictOldest = false) {
   const key = randomBytes(32);
   const buckets = new Map<string, { until: number; count: number }>();
   return async (source: string): Promise<boolean> => {
@@ -18,7 +18,10 @@ export function sourceLimiter(clock = Date.now, capacity = 1024, budget = 20) {
     const id = createHmac('sha256', key).update(source).digest('hex');
     let b = buckets.get(id);
     if (!b) {
-      if (buckets.size >= capacity) return false;
+      if (buckets.size >= capacity) {
+        if (!evictOldest) return false;
+        buckets.delete(buckets.keys().next().value!);
+      }
       b = { until: now + 60000, count: 0 }; buckets.set(id, b);
     }
     return ++b.count <= budget;
