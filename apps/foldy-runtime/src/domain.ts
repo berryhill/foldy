@@ -89,6 +89,27 @@ export class Domain {
  current(){return this.db.prepare('SELECT value FROM meta WHERE key=?').get('current')!.value as string;}
  private files(revision:string):Files{const r=this.db.prepare('SELECT files FROM revisions WHERE id=?').get(revision);if(!r)fail('REVISION_CONFLICT');return JSON.parse(r.files as string);}
  file(path:string,revision=this.current()){if(!safePath(path))fail('REQUEST_INVALID');const f=this.files(revision)[path];return f?{bytes:Buffer.from(f.content,'base64'),mediaType:f.mediaType}:undefined;}
+ /** Read a saved candidate member without advancing the published pointer.
+  * The revision must be in this update's lineage, excluding its published base. */
+ previewFile(updateId:string,revisionId:string,path:string){
+  if(!safePath(path)||this.protectedPaths.has(path))fail('REQUEST_INVALID');
+  const update=this.update(updateId);
+  let cursor=update.revision;
+  const visited=new Set<string>();
+  while(cursor!==update.base){
+   if(visited.has(cursor))fail('REVISION_CONFLICT');
+   visited.add(cursor);
+   if(cursor===revisionId){
+    const file=this.files(cursor)[path];
+    if(!file)fail('FILE_UNAVAILABLE');
+    return {projectId:this.identity.projectId,updateId,revisionId,path,bytes:Buffer.from(file.content,'base64'),mediaType:file.mediaType};
+   }
+   const row=this.db.prepare('SELECT parent FROM revisions WHERE id=?').get(cursor);
+   if(!row||typeof row.parent!=='string')fail('REVISION_CONFLICT');
+   cursor=row.parent;
+  }
+  fail('REVISION_CONFLICT');
+ }
  tools(actor:Actor){return [...reads,...(actor.owner||actor.scopes.includes('foldy:draft:write')?draft:[]),...(actor.owner?review:[])].map(name=>{const keys=reads.includes(name)?['projectId','atRevisionId',...(['get_update','get_update_changes','get_update_preview','list_review_comments','get_readiness_checks','list_update_receipts'].includes(name)?['updateId']:[]),...(name==='list_update_receipts'?['afterReceiptId','limit']:[]),...(['get_file','get_page'].includes(name)?['path']:[]),...(name==='search'?['query']:[])]:['projectId','expectedBaseRevisionId','idempotencyKey',...(name==='create_update'?[]:['updateId','expectedUpdateRevisionId']),...(extras[name]||[])];const required=reads.includes(name)?keys.filter(k=>!['projectId','atRevisionId','afterReceiptId','limit'].includes(k)):keys;return {name,description:name.replaceAll('_',' '),inputSchema:{type:'object' as const,properties:Object.fromEntries(keys.map(k=>[k,k==='blocking'?{type:'boolean'}:k==='target'?{type:'object',properties:Object.fromEntries(['path','block','field','selection'].map(p=>[p,{type:'string'}])),additionalProperties:false}:{type:'string'}])),required,additionalProperties:false}};});}
  dispatch(name:string,args:Record<string,unknown>,actor:Actor):any{
  if(!actor.owner&&!actor.scopes.includes('foldy:read'))fail('SCOPE_REQUIRED');const tool=this.tools(actor).find(t=>t.name===name);if(!tool)fail('SCOPE_REQUIRED');

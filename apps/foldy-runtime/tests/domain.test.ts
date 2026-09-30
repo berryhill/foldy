@@ -61,3 +61,40 @@ test('revision-bound page and workbook reads search only the selected content sn
   assert.equal(d.dispatch('get_page',{path:'pages/about.html',atRevisionId:'base'},reader).value.content,'<h1>About Alpha</h1>');
  }finally{d.close();rmSync(dir,{recursive:true,force:true});}
 });
+test('candidate preview reads exact saved update members without advancing publication',()=>{
+ const dir=mkdtempSync(join(tmpdir(),'foldy-preview-'));
+ const seed={manifest:{instanceId:'i',projectId:'p',workbookId:'w',revisionId:'base'},files:new Map([
+  ['index.html',{bytes:Buffer.from('published'),mediaType:'text/html'}],
+  ['assets/logo.png',{bytes:Buffer.from([0,255,42]),mediaType:'image/png'}],
+  ['secret.txt',{bytes:Buffer.from('protected fixture'),mediaType:'text/plain'}],
+ ]),protectedPaths:['secret.txt']};
+ const d=new Domain(join(dir,'content.sqlite'),seed),owner={id:'owner',owner:true,scopes:[]};
+ try{
+  const created=d.dispatch('create_update',{projectId:'p',expectedBaseRevisionId:'base',idempotencyKey:'create',title:'Candidate'},owner);
+  const edit=d.dispatch('update_page',{projectId:'p',expectedBaseRevisionId:'base',idempotencyKey:'edit',updateId:created.updateId,expectedUpdateRevisionId:created.updateRevisionId,path:'index.html',content:'candidate'},owner);
+  const preview=d.previewFile(created.updateId,edit.updateRevisionId,'index.html');
+  assert.deepEqual(preview,{projectId:'p',updateId:created.updateId,revisionId:edit.updateRevisionId,path:'index.html',bytes:Buffer.from('candidate'),mediaType:'text/html'});
+  assert.equal(d.file('index.html')?.bytes.toString(),'published');
+  assert.equal(d.current(),'base');
+  assert.deepEqual(d.previewFile(created.updateId,edit.updateRevisionId,'assets/logo.png').bytes,Buffer.from([0,255,42]));
+  const later=d.dispatch('update_page',{projectId:'p',expectedBaseRevisionId:'base',idempotencyKey:'later',updateId:created.updateId,expectedUpdateRevisionId:edit.updateRevisionId,path:'index.html',content:'later candidate'},owner);
+  assert.equal(d.previewFile(created.updateId,edit.updateRevisionId,'index.html').bytes.toString(),'candidate');
+  assert.equal(d.previewFile(created.updateId,later.updateRevisionId,'index.html').bytes.toString(),'later candidate');
+  const other=d.dispatch('create_update',{projectId:'p',expectedBaseRevisionId:'base',idempotencyKey:'other',title:'Other'},owner);
+  const before=d.backup(owner);
+  for(const [id,revision,path,code] of [
+   ['missing',edit.updateRevisionId,'index.html','UPDATE_UNAVAILABLE'],
+   [created.updateId,'missing','index.html','REVISION_CONFLICT'],
+   [created.updateId,'base','index.html','REVISION_CONFLICT'],
+   [created.updateId,other.updateRevisionId,'index.html','REVISION_CONFLICT'],
+   [created.updateId,edit.updateRevisionId,'missing.html','FILE_UNAVAILABLE'],
+   [created.updateId,edit.updateRevisionId,'../index.html','REQUEST_INVALID'],
+   [created.updateId,edit.updateRevisionId,'assets/../index.html','REQUEST_INVALID'],
+   [created.updateId,edit.updateRevisionId,'/index.html','REQUEST_INVALID'],
+   [created.updateId,edit.updateRevisionId,'assets\\logo.png','REQUEST_INVALID'],
+   [created.updateId,edit.updateRevisionId,'secret.txt','REQUEST_INVALID'],
+  ] as const)assert.throws(()=>d.previewFile(id,revision,path),new RegExp(code));
+  assert.equal(d.backup(owner),before);
+  assert.equal(d.file('index.html')?.bytes.toString(),'published');
+ }finally{d.close();rmSync(dir,{recursive:true,force:true});}
+});
