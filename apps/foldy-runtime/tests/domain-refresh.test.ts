@@ -11,6 +11,20 @@ function fixture(fn:(d:Domain,run:any,dir:string)=>void){const dir=mkdtempSync(j
 function ref(a:any){return {updateId:a.updateId,expectedUpdateRevisionId:a.updateRevisionId};}
 function approve(run:any,a:any){run('submit_update_for_review',ref(a));run('approve_update_revision',{...ref(a),reason:'reviewed'});}
 function publish(run:any,a:any){approve(run,a);return run('publish_update',{...ref(a),reason:'publish'});}
+test('refreshed update preview never admits the old published base as its candidate',()=>fixture((d,run)=>{
+ let a=run('create_update',{title:'proposal'});
+ const initial=a.updateRevisionId;
+ a=run('update_page',{...ref(a),path:'a.txt',content:'proposal'});
+ const previous=a.updateRevisionId;
+ let b=run('create_update',{title:'other'});
+ b=run('update_page',{...ref(b),path:'b.txt',content:'published'});publish(run,b);
+ const refreshed=run('refresh_update_proposal',{...ref(a),expectedBaseRevisionId:'base',newPublishedBaseRevisionId:d.current()});
+ assert.equal(d.previewFile(a.updateId,previous,'a.txt')!.bytes.toString(),'proposal');
+ assert.equal(d.previewFile(a.updateId,refreshed.updateRevisionId,'a.txt')!.bytes.toString(),'proposal');
+ assert.equal(d.previewFile(a.updateId,initial,'index.html')!.bytes.toString(),'index.html');
+ assert.throws(()=>d.previewFile(a.updateId,'base','index.html'),/REVISION_CONFLICT/);
+ assert.throws(()=>d.previewFile(a.updateId,b.updateRevisionId,'index.html'),/REVISION_CONFLICT/);
+}));
 test('clean refresh preserves old revisions/comments, invalidates approval and restores branched publication history',()=>fixture((d,run,dir)=>{
  let a=run('create_update',{title:'proposal'});a=run('update_page',{...ref(a),path:'a.txt',content:'proposal'});run('add_review_comment',{...ref(a),text:'keep history',blocking:false,target:{path:'a.txt'}});approve(run,a);
  let b=run('create_update',{title:'other'});b=run('update_page',{...ref(b),path:'b.txt',content:'published'});publish(run,b);

@@ -98,3 +98,23 @@ test('candidate preview reads exact saved update members without advancing publi
   assert.equal(d.file('index.html')?.bytes.toString(),'published');
  }finally{d.close();rmSync(dir,{recursive:true,force:true});}
 });
+test('candidate preview rejects oversized revisions before serving any member',()=>{
+ const d=new Domain(':memory:',{manifest:{instanceId:'i',projectId:'p',workbookId:'w',revisionId:'base'},files:new Map([
+  ['index.html',{bytes:Buffer.from('<h1>Preview</h1>'),mediaType:'text/html'}],
+  ['assets/large.bin',{bytes:Buffer.alloc(9*1024*1024),mediaType:'application/octet-stream'}],
+ ])});
+ try{
+  const created=d.dispatch('create_update',{projectId:'p',expectedBaseRevisionId:'base',idempotencyKey:'large',title:'Large'}, {id:'owner',owner:true,scopes:[]});
+  assert.throws(()=>d.previewFile(created.updateId,created.updateRevisionId,'index.html'),/PREVIEW_TOO_LARGE/);
+  assert.equal(d.current(),'base');
+ }finally{d.close();}
+});
+test('candidate preview caps member count before dependency scanning',()=>{
+ const members=new Map<string,{bytes:Buffer;mediaType:string}>([['index.html',{bytes:Buffer.from('<h1>Preview</h1>'),mediaType:'text/html'}]]);
+ for(let i=0;i<257;i++)members.set(`assets/${i}.txt`,{bytes:Buffer.from('asset'),mediaType:'text/plain'});
+ const d=new Domain(':memory:',{manifest:{instanceId:'i',projectId:'p',workbookId:'w',revisionId:'base'},files:members});
+ try{
+  const created=d.dispatch('create_update',{projectId:'p',expectedBaseRevisionId:'base',idempotencyKey:'many',title:'Many'}, {id:'owner',owner:true,scopes:[]});
+  assert.throws(()=>d.previewFile(created.updateId,created.updateRevisionId,'index.html'),/PREVIEW_TOO_LARGE/);
+ }finally{d.close();}
+});

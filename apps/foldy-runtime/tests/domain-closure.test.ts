@@ -23,6 +23,7 @@ for(const [label,path,content,reason] of [
  ['unquoted srcset','index.html','<img srcset=missing.png>','MISSING_DEPENDENCY'],
  ['escaped CSS url','styles/nested.css',String.raw`body {background:u\72l(missing.png)}`,'UNSUPPORTED_ESCAPE'],
  ['escaped CSS import','styles/nested.css',String.raw`@im\70ort 'missing.css';`,'UNSUPPORTED_ESCAPE'],
+ ['image-set URL','styles/nested.css','body{background:image-set("/assets/seed.png" 1x)}','UNSUPPORTED_IMAGE_SET'],
  ['inline escaped CSS','index.html',String.raw`<style>body {background:u\72l(missing.png)}</style>`,'UNSUPPORTED_ESCAPE'],
  ['numeric HTML entity','index.html','<img src="&#109;issing.png">','UNSUPPORTED_HTML_ENTITY'],
  ['named HTML entity','index.html','<img src="missing&period;png">','UNSUPPORTED_HTML_ENTITY'],

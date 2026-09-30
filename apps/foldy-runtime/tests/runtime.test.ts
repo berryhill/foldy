@@ -43,7 +43,9 @@ test('sealed bootstrap, owner/viewer/MCP separation, real protocol, immutable by
  assert.equal((await fetch(u+'/api/readiness',{headers:owner})).status,200);
  assert.equal(await (await fetch(u+'/')).text(),'<!doctype html><h1>Immutable Foldy</h1>');
  const rival=spawn(process.execPath,[resolve('dist/main.js')],{env:f.env,stdio:'ignore'});
- const race=await Promise.race([once(rival,'exit').then(([code])=>code),new Promise(r=>setTimeout(()=>r('still-running'),750))]);
+ // Parallel runtime suites can delay process startup; the invariant is that a
+ // second writer exits, not that the OS schedules its exit within 750ms.
+ const race=await Promise.race([once(rival,'exit').then(([code])=>code),new Promise(r=>setTimeout(()=>r('still-running'),5000))]);
  rival.kill(); assert.notEqual(race,'still-running','a second process must not own the same state');
  writeFileSync(join(f.bundle,'index.html'),'tampered');
  assert.match(await (await fetch(u+'/')).text(),/Immutable Foldy/);

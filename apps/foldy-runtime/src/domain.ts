@@ -4,7 +4,7 @@ import { posix } from 'node:path';
 /** Revision-bound evidence; scans every member, so transitive/orphan assets cannot evade checks.
  * External dependencies fail closed until an explicit immutable-external policy is supplied.
  * Static reference extraction follows the daemon publication closure, without private imports. */
-export function dependencyEvidence(files:Record<string,{content:string;mediaType:string}>,revisionId:string){
+export function dependencyEvidence(files:Record<string,{content:string;mediaType:string}>,revisionId:string,previewRelativeOnly=false){
  const failures:{path:string;reference:string;reason:string}[]=[];
  const members=Object.keys(files).sort().map(path=>({path,mediaType:files[path].mediaType,sha256:digest(Buffer.from(files[path].content,'base64'))}));
  for(const {path,mediaType} of members){
@@ -14,6 +14,7 @@ export function dependencyEvidence(files:Record<string,{content:string;mediaType
  // closure or report a guessed missing path. This deliberately also rejects
  // harmless escapes/entities in prose/comments until a parser is adopted.
  if((mediaType==='text/html'||mediaType==='text/css')&&text.includes('\\')){failures.push({path,reference:'\\',reason:'UNSUPPORTED_ESCAPE'});continue;}
+ if((mediaType==='text/html'||mediaType==='text/css')&&/\b(?:-webkit-)?image-set\s*\(/i.test(text)){failures.push({path,reference:'image-set',reason:'UNSUPPORTED_IMAGE_SET'});continue;}
  if(mediaType==='text/html'&&/&(?:#|[a-z])/i.test(text)){failures.push({path,reference:'&',reason:'UNSUPPORTED_HTML_ENTITY'});continue;}
  const collect=(pattern:RegExp)=>{for(const m of text.matchAll(pattern))refs.push(m[1]||m[2]||m[3]);};
  if(mediaType==='text/html'){
@@ -32,6 +33,7 @@ export function dependencyEvidence(files:Record<string,{content:string;mediaType
  const r=reference.trim();if(!r||r.startsWith('#')||r.startsWith('data:'))continue;
  if(/^[A-Za-z][A-Za-z0-9+.-]*:/.test(r)||r.startsWith('//')){failures.push({path,reference,reason:'EXTERNAL_NOT_AUTHORIZED'});continue;}
  let decoded:string;try{decoded=decodeURIComponent(r.split(/[?#]/)[0]);}catch{failures.push({path,reference,reason:'INVALID_PATH'});continue;}
+ if(previewRelativeOnly&&decoded.startsWith('/')){failures.push({path,reference,reason:'PREVIEW_ROOT_ABSOLUTE'});continue;}
  const resolved=posix.normalize(decoded.startsWith('/')?decoded.slice(1):posix.join(posix.dirname(path),decoded));
  if(!safePath(resolved)||decoded.includes('\\'))failures.push({path,reference,reason:'INVALID_PATH'});
  else if(!Object.hasOwn(files,resolved))failures.push({path,reference,reason:'MISSING_DEPENDENCY'});
@@ -54,8 +56,10 @@ export const readToolNames=[...reads];
 export const draftToolNames=[...draft];
 export const operationReceiptRequired=['projectId','updateId','priorState','currentState','updateRevisionId','currentPublishedRevisionId','receiptId','occurredAt','actorRef','operation','reason'];
 function fail(code:string):never {throw Error(code);}
+const MAX_PREVIEW_JSON_BYTES=8*1024*1024,MAX_PREVIEW_MEMBERS=256,MAX_PREVIEW_CACHE=8,MAX_PREVIEW_LINEAGE=1024;
 export class Domain {
  private db:DatabaseSync;
+ private previewSnapshots=new Map<string,Files>();
  private protectedPaths:ReadonlySet<string>;
  private identity:{instanceId:string;projectId:string;workbookId:string;revisionId:string};
  constructor(path:string,seed:{manifest:{instanceId:string;projectId:string;workbookId:string;revisionId:string};files:Map<string,{bytes:Buffer;mediaType:string}>;protectedPaths?:readonly string[]}){
@@ -89,21 +93,38 @@ export class Domain {
  current(){return this.db.prepare('SELECT value FROM meta WHERE key=?').get('current')!.value as string;}
  private files(revision:string):Files{const r=this.db.prepare('SELECT files FROM revisions WHERE id=?').get(revision);if(!r)fail('REVISION_CONFLICT');return JSON.parse(r.files as string);}
  file(path:string,revision=this.current()){if(!safePath(path))fail('REQUEST_INVALID');const f=this.files(revision)[path];return f?{bytes:Buffer.from(f.content,'base64'),mediaType:f.mediaType}:undefined;}
+ private previewSnapshot(revision:string):Files{
+  const cached=this.previewSnapshots.get(revision);
+  if(cached){this.previewSnapshots.delete(revision);this.previewSnapshots.set(revision,cached);return cached;}
+  const size=this.db.prepare('SELECT length(files) AS bytes FROM revisions WHERE id=?').get(revision)?.bytes;
+  if(size===undefined)fail('REVISION_CONFLICT');
+  if(typeof size!=='number'||size>MAX_PREVIEW_JSON_BYTES)fail('PREVIEW_TOO_LARGE');
+  const files=this.files(revision);
+  if(Object.keys(files).length>MAX_PREVIEW_MEMBERS)fail('PREVIEW_TOO_LARGE');
+  if(!dependencyEvidence(files,revision,true).pass)fail('PREVIEW_UNSAFE');
+  this.previewSnapshots.set(revision,files);
+  if(this.previewSnapshots.size>MAX_PREVIEW_CACHE)this.previewSnapshots.delete(this.previewSnapshots.keys().next().value!);
+  return files;
+ }
  /** Read a saved candidate member without advancing the published pointer.
   * The revision must be in this update's lineage, excluding its published base. */
  previewFile(updateId:string,revisionId:string,path:string){
   if(!safePath(path)||this.protectedPaths.has(path))fail('REQUEST_INVALID');
   const update=this.update(updateId);
+  const origin=this.db.prepare("SELECT json_extract(value,'$.updateRevisionId') AS revision FROM receipts WHERE json_extract(value,'$.operation')='create_update' AND json_extract(value,'$.updateId')=? LIMIT 1").get(updateId)?.revision;
+  if(typeof origin!=='string')fail('REVISION_CONFLICT');
   let cursor=update.revision;
   const visited=new Set<string>();
-  while(cursor!==update.base){
+  for(let depth=0;depth<MAX_PREVIEW_LINEAGE;depth++){
    if(visited.has(cursor))fail('REVISION_CONFLICT');
    visited.add(cursor);
    if(cursor===revisionId){
-    const file=this.files(cursor)[path];
+    const files=this.previewSnapshot(cursor);
+    const file=files[path];
     if(!file)fail('FILE_UNAVAILABLE');
     return {projectId:this.identity.projectId,updateId,revisionId,path,bytes:Buffer.from(file.content,'base64'),mediaType:file.mediaType};
    }
+   if(cursor===origin)break;
    const row=this.db.prepare('SELECT parent FROM revisions WHERE id=?').get(cursor);
    if(!row||typeof row.parent!=='string')fail('REVISION_CONFLICT');
    cursor=row.parent;

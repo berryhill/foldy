@@ -107,6 +107,18 @@ async function main(){
  return json(res,400,{code:'REQUEST_INVALID'});
  }
  if(!getState())return json(res,423,{code:'SEALED'});
+ if(path.startsWith('/_preview/')){
+  if(!owner(req))return json(res,401,{code:'AUTH_REQUIRED'});
+  if(req.method!=='GET'&&req.method!=='HEAD')return json(res,405,{code:'METHOD_INVALID'});
+  if(domain.requiresAccessConfiguration())return json(res,423,{code:'ACCESS_CONFIGURATION_REQUIRED'});
+  const match=/^\/_preview\/([A-Za-z0-9-]+)\/([A-Za-z0-9-]+)\/(.*)$/.exec(path);
+  if(!match||/%(?:2f|5c|00)/i.test(match[3]))return json(res,400,{code:'PATH_INVALID'});
+  let name:string;try{name=decodeURIComponent(match[3]||'index.html');}catch{return json(res,400,{code:'PATH_INVALID'});}
+  const file=domain.previewFile(match[1],match[2],name);
+  res.setHeader('x-foldy-preview-revision',file.revisionId);
+  res.writeHead(200,{'content-type':file.mediaType,'content-length':file.bytes.length});
+  res.end(req.method==='HEAD'?undefined:file.bytes);return;
+ }
  if(await viewerRoute(req,res,path,`${dev?'http':'https'}://${host}`,access,owner,()=>domain.confirmAccessConfiguration({id:'owner',owner:true,scopes:[]})))return;
  if(path==='/api/operations/contract'){
  if(!owner(req))return json(res,401,{code:'AUTH_REQUIRED'});
