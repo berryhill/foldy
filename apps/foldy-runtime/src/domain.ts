@@ -51,7 +51,7 @@ const reads=['get_project','get_workbook','list_pages','get_page','list_files','
 const draft=['refresh_update_proposal','create_update','create_page','remove_page','move_page','update_page','save_update_revision','submit_update_for_review'];
 const review=['add_review_comment','resolve_review_comment','request_update_changes','close_update','approve_update_revision','publish_update'];
 const extras:Record<string,string[]>={refresh_update_proposal:['newPublishedBaseRevisionId'],create_page:['path','content','mediaType'],remove_page:['path'],move_page:['path','destinationPath'],create_update:['title'],update_page:['path','content'],add_review_comment:['text','blocking','target'],resolve_review_comment:['commentId','reason'],request_update_changes:['reason'],close_update:['reason'],approve_update_revision:['reason'],publish_update:['reason']};
-export const toolContractVersion='foldy-tool-contract.v1';
+export const toolContractVersion='foldy-tool-contract.v2';
 export const readToolNames=[...reads];
 export const draftToolNames=[...draft];
 export const operationReceiptRequired=['projectId','updateId','priorState','currentState','updateRevisionId','currentPublishedRevisionId','receiptId','occurredAt','actorRef','operation','reason'];
@@ -59,7 +59,7 @@ function fail(code:string):never {throw Error(code);}
 const MAX_PREVIEW_JSON_BYTES=8*1024*1024,MAX_PREVIEW_MEMBERS=256,MAX_PREVIEW_CACHE=8,MAX_PREVIEW_LINEAGE=1024;
 export class Domain {
  private db:DatabaseSync;
- private previewSnapshots=new Map<string,Files>();
+ private previewSnapshots=new Map<string,{files:Files;evidence:ReturnType<typeof dependencyEvidence>}>();
  private protectedPaths:ReadonlySet<string>;
  private identity:{instanceId:string;projectId:string;workbookId:string;revisionId:string};
  constructor(path:string,seed:{manifest:{instanceId:string;projectId:string;workbookId:string;revisionId:string};files:Map<string,{bytes:Buffer;mediaType:string}>;protectedPaths?:readonly string[]}){
@@ -93,7 +93,7 @@ export class Domain {
  current(){return this.db.prepare('SELECT value FROM meta WHERE key=?').get('current')!.value as string;}
  private files(revision:string):Files{const r=this.db.prepare('SELECT files FROM revisions WHERE id=?').get(revision);if(!r)fail('REVISION_CONFLICT');return JSON.parse(r.files as string);}
  file(path:string,revision=this.current()){if(!safePath(path))fail('REQUEST_INVALID');const f=this.files(revision)[path];return f?{bytes:Buffer.from(f.content,'base64'),mediaType:f.mediaType}:undefined;}
- private previewSnapshot(revision:string):Files{
+ private previewSnapshot(revision:string){
   const cached=this.previewSnapshots.get(revision);
   if(cached){this.previewSnapshots.delete(revision);this.previewSnapshots.set(revision,cached);return cached;}
   const size=this.db.prepare('SELECT length(files) AS bytes FROM revisions WHERE id=?').get(revision)?.bytes;
@@ -101,11 +101,16 @@ export class Domain {
   if(typeof size!=='number'||size>MAX_PREVIEW_JSON_BYTES)fail('PREVIEW_TOO_LARGE');
   const files=this.files(revision);
   if(Object.keys(files).length>MAX_PREVIEW_MEMBERS)fail('PREVIEW_TOO_LARGE');
-  if(!dependencyEvidence(files,revision,true).pass)fail('PREVIEW_UNSAFE');
-  this.previewSnapshots.set(revision,files);
+  const snapshot={files,evidence:dependencyEvidence(files,revision,true)};
+  this.previewSnapshots.set(revision,snapshot);
   if(this.previewSnapshots.size>MAX_PREVIEW_CACHE)this.previewSnapshots.delete(this.previewSnapshots.keys().next().value!);
-  return files;
+  return snapshot;
  }
+ private previewEvidence(revision:string){
+  try{return this.previewSnapshot(revision).evidence;}
+  catch(error){if((error as Error).message!=='PREVIEW_TOO_LARGE')throw error;return {revisionId:revision,filesDigest:'',pass:false,failures:[{path:'',reference:'',reason:'PREVIEW_TOO_LARGE'}]};}
+ }
+ private previewAvailable(revision:string):boolean{try{return this.previewSnapshot(revision).evidence.pass;}catch{return false;}}
  /** Read a saved candidate member without advancing the published pointer.
   * The revision must be in this update's lineage, excluding its published base. */
  previewFile(updateId:string,revisionId:string,path:string){
@@ -119,7 +124,9 @@ export class Domain {
    if(visited.has(cursor))fail('REVISION_CONFLICT');
    visited.add(cursor);
    if(cursor===revisionId){
-    const files=this.previewSnapshot(cursor);
+    const snapshot=this.previewSnapshot(cursor);
+    if(!snapshot.evidence.pass)fail('PREVIEW_UNSAFE');
+    const files=snapshot.files;
     const file=files[path];
     if(!file)fail('FILE_UNAVAILABLE');
     return {projectId:this.identity.projectId,updateId,revisionId,path,bytes:Buffer.from(file.content,'base64'),mediaType:file.mediaType};
@@ -171,12 +178,12 @@ export class Domain {
  if(name==='approve_update_revision'){this.check(u);if(u.state!=='Ready for review')fail('REVIEW_REQUIRED');u.approval=u.revision;u.state='Approved';}
  if(name==='publish_update'){if(u.approval&&u.approval!==u.revision)fail('APPROVAL_STALE');if(u.state!=='Approved'||u.approval!==u.revision)fail('REVIEW_REQUIRED');this.check(u);const changed=this.db.prepare('UPDATE meta SET value=? WHERE key=? AND value=?').run(u.revision,'current',u.base);if(changed.changes!==1)fail('REVISION_CONFLICT');u.state='Published';}
  if(name==='close_update')u.state='Closed';this.db.prepare('INSERT INTO updates VALUES(?,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value').run(u.id,JSON.stringify(u));
- const checksEvidence=['submit_update_for_review','approve_update_revision','publish_update'].includes(name)?dependencyEvidence(this.files(u.revision),u.revision):undefined;
+ const checksEvidence=['submit_update_for_review','approve_update_revision','publish_update'].includes(name)?this.previewEvidence(u.revision):undefined;
  const result={...(refreshEvidence?{refreshEvidence}:{}),...(checksEvidence?{checksEvidence}:{}),projectId:this.identity.projectId,updateId:u.id,priorState,currentState:u.state,updateRevisionId:u.revision,currentPublishedRevisionId:this.current(),receiptId:randomUUID(),occurredAt:new Date().toISOString(),actorRef:actor.id,operation:name,reason:args.reason||null,...(commentId?{commentId}:{})};this.db.prepare('INSERT INTO receipts VALUES(?,?,?)').run(key,input,JSON.stringify(result));this.db.exec('COMMIT');return result;
  }catch(e){this.db.exec('ROLLBACK');throw e;}
  }
  private update(id:string):Update{const row=this.db.prepare('SELECT value FROM updates WHERE id=?').get(id);if(!row)fail('UPDATE_UNAVAILABLE');return JSON.parse(row.value as string);}
- private check(u:Update){const base=this.files(u.base),proposal=this.files(u.revision);for(const p of this.protectedPaths)if(base[p]?.content!==proposal[p]?.content||base[p]?.mediaType!==proposal[p]?.mediaType)fail('PROTECTED_PATH');if(u.comments.some(c=>c.blocking&&!c.resolved))fail('BLOCKING_COMMENTS');if(!dependencyEvidence(this.files(u.revision),u.revision).pass)fail('CHECKS_FAILED');}
+ private check(u:Update){const base=this.files(u.base),proposal=this.files(u.revision);for(const p of this.protectedPaths)if(base[p]?.content!==proposal[p]?.content||base[p]?.mediaType!==proposal[p]?.mediaType)fail('PROTECTED_PATH');if(u.comments.some(c=>c.blocking&&!c.resolved))fail('BLOCKING_COMMENTS');if(!this.previewEvidence(u.revision).pass)fail('CHECKS_FAILED');}
  private read(name:string,args:Record<string,unknown>){const observedRevisionId=(args.atRevisionId as string)||this.current(),files=this.files(observedRevisionId);if(['list_updates','get_revision_history'].includes(name)&&observedRevisionId!==this.current())fail('REVISION_CONFLICT');let value:unknown;
  if(name==='get_project')value={instanceId:this.identity.instanceId,projectId:this.identity.projectId,workbookId:this.identity.workbookId};
  if(name==='get_workbook'){const f=files['workbook.json'];if(!f||f.mediaType!=='application/json')fail('FILE_UNAVAILABLE');value={path:'workbook.json',content:Buffer.from(f.content,'base64').toString('utf8')};}
@@ -209,7 +216,10 @@ export class Domain {
   ...(r.refreshEvidence?{refreshEvidence:{previousBaseRevisionId:r.refreshEvidence.previousBaseRevisionId,previousUpdateRevisionId:r.refreshEvidence.previousUpdateRevisionId}}:{}),
  };});
  value={receipts,nextCursor:rows.length>limit?receipts.at(-1)!.receiptId:null};
- }if(name==='list_review_comments')value=u.comments;if(name==='get_update_preview')value={revisionId:u.revision,files:this.files(u.revision)};if(name==='get_readiness_checks')value={revisionId:u.revision,blockingComments:u.comments.filter(c=>c.blocking&&!c.resolved).length,baseCurrent:u.base===this.current(),approved:u.approval===u.revision,entryPresent:!!this.files(u.revision)['index.html'],dependencies:dependencyEvidence(this.files(u.revision),u.revision)};if(name==='get_update_changes'){const before=this.files(u.base),after=this.files(u.revision);value=[...new Set([...Object.keys(before),...Object.keys(after)])].sort().filter(p=>before[p]?.content!==after[p]?.content||before[p]?.mediaType!==after[p]?.mediaType).map(path=>({path,before:before[path],after:after[path]}));}}
+ }if(name==='list_review_comments')value=u.comments;if(name==='get_update_preview'){
+  const ready=this.previewAvailable(u.revision);
+  value={revisionId:u.revision,files:this.files(u.revision),previewAccess:'owner-only',previewStatus:ready?'ready':'blocked',...(ready?{ownerPreviewPath:`/_preview/${u.id}/${u.revision}/`}:{})};
+ }if(name==='get_readiness_checks'){const evidence=this.previewEvidence(u.revision);value={revisionId:u.revision,blockingComments:u.comments.filter(c=>c.blocking&&!c.resolved).length,baseCurrent:u.base===this.current(),approved:u.approval===u.revision,entryPresent:!!this.files(u.revision)['index.html'],previewReady:evidence.pass,dependencies:evidence};}if(name==='get_update_changes'){const before=this.files(u.base),after=this.files(u.revision);value=[...new Set([...Object.keys(before),...Object.keys(after)])].sort().filter(p=>before[p]?.content!==after[p]?.content||before[p]?.mediaType!==after[p]?.mediaType).map(path=>({path,before:before[path],after:after[path]}));}}
  return {observedRevisionId:args.updateId?this.update(args.updateId as string).revision:observedRevisionId,value};
  }
 }

@@ -81,7 +81,7 @@ test('versioned public tool snapshot matches effective read/draft tools and owne
   p=await launch(f);const origin=p.url;
   const claim=await post(origin+'/api/claim',{assertion:f.assertion});const owner={cookie:claim.headers.get('set-cookie')!.split(';')[0],origin};
   const manifest=await (await fetch(origin+'/mcp/manifest.json')).json();
-  assert.equal(manifest.toolContractVersion,'foldy-tool-contract.v1');
+  assert.equal(manifest.toolContractVersion,'foldy-tool-contract.v2');
   assert.ok(Array.isArray(manifest.capabilities.toolSchemas));
   assert.deepEqual(manifest.capabilities.tools,manifest.capabilities.toolSchemas.map((tool:any)=>tool.name));
   assert.ok(manifest.capabilities.toolSchemas.every((tool:any)=>!['approve_update_revision','publish_update','close_update'].includes(tool.name)));

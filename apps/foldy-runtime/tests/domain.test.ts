@@ -72,6 +72,9 @@ test('candidate preview reads exact saved update members without advancing publi
  try{
   const created=d.dispatch('create_update',{projectId:'p',expectedBaseRevisionId:'base',idempotencyKey:'create',title:'Candidate'},owner);
   const edit=d.dispatch('update_page',{projectId:'p',expectedBaseRevisionId:'base',idempotencyKey:'edit',updateId:created.updateId,expectedUpdateRevisionId:created.updateRevisionId,path:'index.html',content:'candidate'},owner);
+  const previewRead=d.dispatch('get_update_preview',{updateId:created.updateId},owner).value;
+  assert.equal(previewRead.ownerPreviewPath,`/_preview/${created.updateId}/${edit.updateRevisionId}/`);
+  assert.equal(previewRead.previewAccess,'owner-only');
   const preview=d.previewFile(created.updateId,edit.updateRevisionId,'index.html');
   assert.deepEqual(preview,{projectId:'p',updateId:created.updateId,revisionId:edit.updateRevisionId,path:'index.html',bytes:Buffer.from('candidate'),mediaType:'text/html'});
   assert.equal(d.file('index.html')?.bytes.toString(),'published');

@@ -120,6 +120,15 @@ test('standalone owner keyboard claim, review, publication and reader separation
   await post('submit_update_for_review',{...ref,idempotencyKey:randomUUID()});
   await page.getByRole('button',{name:'Refresh',exact:true}).click();
   await page.getByRole('button',{name:'Review update'}).click();
+  const candidatePath=`/_preview/${created.updateId}/${edit.updateRevisionId}/`;
+  await expect(page.getByRole('link',{name:'Open exact candidate preview'})).toHaveAttribute('href',candidatePath);
+  const candidate=await owner.newPage();
+  await candidate.goto(runtime.url+candidatePath);
+  await expect(candidate.getByRole('heading',{name:'Published welcome'})).toBeVisible();
+  const candidateBytes=await (await owner.request.get(runtime.url+candidatePath)).body();
+  expect(await (await viewer.request.get(runtime.url)).body()).not.toEqual(candidateBytes);
+  expect((await viewer.request.get(runtime.url+candidatePath)).status()).toBe(401);
+  await candidate.close();
   await expect(page.locator('pre').nth(0)).toContainText('Immutable Foldy');
   await expect(page.locator('pre').nth(1)).toHaveText(content);
   await expect(page.frameLocator('iframe[title="Before: index.html"]').getByRole('heading',{name:'Immutable Foldy'})).toBeVisible();
@@ -135,6 +144,7 @@ test('standalone owner keyboard claim, review, publication and reader separation
   await expect(page.getByRole('status')).toContainText('Published');
   expect((await post('get_update',{updateId:created.updateId})).value.state).toBe('Published');
   await reader.goto(runtime.url); await expect(reader.getByRole('heading',{name:'Published welcome'})).toBeVisible();
+  expect(await (await viewer.request.get(runtime.url)).body()).toEqual(candidateBytes);
   await page.getByRole('button',{name:'All updates'}).click();
   const downloadEvent=page.waitForEvent('download');
   await page.getByRole('button',{name:'Download backup',exact:true}).click();
