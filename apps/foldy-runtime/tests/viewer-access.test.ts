@@ -6,7 +6,8 @@ import { tmpdir } from 'node:os';
 import * as crypto from 'node:crypto';
 import { randomBytes } from 'node:crypto';
 const { argon2Sync } = crypto as unknown as { argon2Sync: (algorithm: 'argon2id', options: { message: Buffer; nonce: Buffer; memory: number; passes: number; parallelism: number; tagLength: number }) => Buffer };
-import { ViewerAccess } from '../src/viewer-access.ts';
+import { ViewerAccess } from '../dist/viewer-access.js';
+import { reserveArgon2 } from '../dist/argon2-budget.js';
 
 function fixture(t: any) {
   const root = mkdtempSync(join(tmpdir(), 'foldy-viewer-test-'));
@@ -223,4 +224,16 @@ test('bad/missing/symlink state and cache failure fail closed across restart', a
   assert.equal((await f.access.authorize()).allowed, false);
   const linked = join(f.root, 'linked'); symlinkSync(f.options.directory, linked);
   assert.throws(() => new ViewerAccess({ ...f.options, directory: linked }), /STORE_UNAVAILABLE/);
+});
+test('viewer unlock obeys owner-login load while owner changes retain a reserved Argon2 slot', async t => {
+  const f = fixture(t);
+  await f.access.configure(f.owner, { mode: 'password_required', password: f.password });
+  const releaseLoginA = reserveArgon2('owner-login');
+  const releaseLoginB = reserveArgon2('owner-login');
+  const releaseViewer = reserveArgon2('viewer');
+  try {
+    assert.equal((await f.access.unlock(f.password, 'busy')).code, 'RATE_LIMITED');
+    const receipt = await f.access.configure(f.owner, { mode: 'password_required', password: f.password });
+    assert.equal(receipt.protectionVersion, 2);
+  } finally { releaseViewer(); releaseLoginB(); releaseLoginA(); }
 });

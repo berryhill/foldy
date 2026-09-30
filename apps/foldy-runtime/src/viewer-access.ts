@@ -1,5 +1,6 @@
 import * as crypto from 'node:crypto';
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { argon2Available, reserveArgon2 } from './argon2-budget.js';
 // Node 24.15 provides this API; repository @types/node predates its addition.
 const { argon2 } = crypto as unknown as { argon2: (algorithm: 'argon2id', options: { message: Buffer; nonce: Buffer; memory: number; passes: number; parallelism: number; tagLength: number }, callback: (error: Error | null, result: Buffer) => void) => void };
 import { closeSync, constants, existsSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
@@ -34,8 +35,7 @@ const IDLE = 30 * 60000, ABSOLUTE = 12 * 60 * 60000, WINDOW = 15 * 60000;
 // Bounds leave ample headroom for refreshing existing grants and owner changes.
 const MAX_BYTES = 8 * 1024 * 1024, ADMISSION_BYTES = 7 * 1024 * 1024;
 const MAX_FAILURES = 1024, MAX_SESSIONS = 1024, MAX_ATTEMPTS = 32;
-// Shared across gate instances in this process; the ingress limiter also spans hosts.
-let viewerDerivations = 0, ownerDerivations = 0;
+// The process-wide Argon2 budget is shared with owner-password operations.
 const digest = (s: string) => createHash('sha256').update(s).digest('hex');
 const hex = (s: unknown, bytes: number) => typeof s === 'string' && new RegExp(`^[a-f0-9]{${bytes * 2}}$`).test(s);
 const validPassword = (p: unknown): p is string => typeof p === 'string' && Buffer.from(p, 'utf8').toString('utf8') === p && Array.from(p).length >= 12 && Array.from(p).length <= 128;
@@ -148,12 +148,11 @@ export class ViewerAccess {
     // Owner work has a separate bounded slot so anonymous work cannot starve recovery.
     let verifier: State['verifier'] = null;
     if (change.mode === 'password_required') {
-      if (ownerDerivations >= 1) throw new Error('VERIFIER_UNAVAILABLE');
-      ownerDerivations++;
+      const release = reserveArgon2('owner-change');
       try {
         const salt = randomBytes(16).toString('hex');
         verifier = { algorithm: 'argon2id', salt, hash: (await derive(change.password, salt)).toString('hex') };
-      } finally { ownerDerivations--; }
+      } finally { release(); }
     }
     return this.#transaction(async s => {
       const operation = change.mode === 'public' ? 'disable' : s.mode === 'public' ? 'enable' : 'replace';
@@ -167,7 +166,7 @@ export class ViewerAccess {
     });
   }
   async unlock(password: unknown, source: string): Promise<UnlockResult> {
-    let slot = false;
+    let releaseSlot: (() => void) | undefined;
     try {
       if (typeof source !== 'string' || !source || source.length > 512) return { ok: false, code: 'AUTH_INVALID' };
       if (await this.#options.allowSource(source) !== true) return { ok: false, code: 'RATE_LIMITED' };
@@ -178,7 +177,7 @@ export class ViewerAccess {
         const now = this.#now(), key = digest(JSON.stringify([s.instanceId, source]));
         const failure = s.failures[key] ?? { attempts: [], blockedUntil: 0 };
         if (failure.blockedUntil > now) return { ok: false, code: 'RATE_LIMITED', retryAfterMs: failure.blockedUntil - now };
-        if (validPassword(password) && viewerDerivations >= 2) return { ok: false, code: 'RATE_LIMITED' };
+        if (validPassword(password) && !argon2Available('viewer')) return { ok: false, code: 'RATE_LIMITED' };
         // Reserve the attempt before releasing the lock, including concurrent guesses.
         if (failure.attempts.length >= MAX_ATTEMPTS) return { ok: false, code: 'RATE_LIMITED' };
         failure.attempts.push(now);
@@ -187,7 +186,7 @@ export class ViewerAccess {
         if (!this.#fits(s, ADMISSION_BYTES)) return { ok: false, code: 'RATE_LIMITED' };
         this.#save(s);
         if (!validPassword(password)) return { ok: false, code: 'AUTH_INVALID', ...(delay ? { retryAfterMs: delay } : {}) };
-        viewerDerivations++; slot = true;
+        releaseSlot = reserveArgon2('viewer');
         return { version: s.protectionVersion, verifier: { ...s.verifier }, key, delay };
       });
       if ('ok' in snapshot) return snapshot;
@@ -208,7 +207,7 @@ export class ViewerAccess {
         return { ok: true, token, role: 'VIEWER', absoluteExpiresAt: now + ABSOLUTE };
       });
     } catch { return { ok: false, code: 'ACCESS_UNAVAILABLE' }; }
-    finally { if (slot) viewerDerivations--; }
+    finally { releaseSlot?.(); }
   }
   async authorize(token?: string, capability: string = 'public_read'): Promise<{ allowed: true; role: 'VIEWER' } | { allowed: false }> {
     if (capability !== 'public_read') return { allowed: false };
