@@ -59,6 +59,10 @@ test('owner-only preview serves immutable candidate assets without switching the
   assert.equal((await fetch(u+prefix+'?token=bad',{headers:owner})).status,400);
   const absolute=await op('update_page',{...ref,path:'index.html',content:'<!doctype html><img src="/assets/site.css">',idempotencyKey:'absolute'});
   assert.notEqual((await fetch(u+`/_preview/${created.updateId}/${absolute.updateRevisionId}/`,{headers:owner})).status,200);
+  const query=await op('update_page',{...ref,expectedUpdateRevisionId:absolute.updateRevisionId,path:'index.html',content:'<!doctype html><link href="assets/site.css?v=1">',idempotencyKey:'query'});
+  const preview=await op('get_update_preview',{projectId:'project-1',updateId:created.updateId});
+  assert.equal(preview.value.previewStatus,'blocked');assert.equal(preview.value.ownerPreviewPath,undefined);
+  assert.notEqual((await fetch(u+`/_preview/${created.updateId}/${query.updateRevisionId}/`,{headers:owner})).status,200);
   const password=randomBytes(24).toString('hex');
   assert.equal((await post(u+'/api/owner/viewer-access',{mode:'password_required',password},owner)).status,200);
   const unlocked=await post(u+'/api/viewer/unlock',{password},{origin:u});assert.equal(unlocked.status,200);

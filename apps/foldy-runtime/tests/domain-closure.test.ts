@@ -22,6 +22,8 @@ test('recursive CSS missing dependency blocks review and keeps draft and receipt
 for(const [label,path,content,reason] of [
  ['unquoted srcset','index.html','<img srcset=missing.png>','MISSING_DEPENDENCY'],
  ['root-absolute preview asset','index.html','<img src="/styles/nested.css">','PREVIEW_ROOT_ABSOLUTE'],
+ ['query-string HTML asset','index.html','<link href="styles/main.css?v=1">','UNSUPPORTED_QUERY'],
+ ['query-string CSS dependency','styles/main.css','@import "nested.css?v=1";','UNSUPPORTED_QUERY'],
  ['escaped CSS url','styles/nested.css',String.raw`body {background:u\72l(missing.png)}`,'UNSUPPORTED_ESCAPE'],
  ['escaped CSS import','styles/nested.css',String.raw`@im\70ort 'missing.css';`,'UNSUPPORTED_ESCAPE'],
  ['image-set URL','styles/nested.css','body{background:image-set("/assets/seed.png" 1x)}','UNSUPPORTED_IMAGE_SET'],

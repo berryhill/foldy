@@ -32,6 +32,9 @@ export function dependencyEvidence(files:Record<string,{content:string;mediaType
  for(const reference of [...new Set(refs)].sort()){
  const r=reference.trim();if(!r||r.startsWith('#')||r.startsWith('data:'))continue;
  if(/^[A-Za-z][A-Za-z0-9+.-]*:/.test(r)||r.startsWith('//')){failures.push({path,reference,reason:'EXTERNAL_NOT_AUTHORIZED'});continue;}
+ // Runtime routes reject query strings; readiness must not certify an asset
+ // URL that the exact candidate preview or published surface cannot serve.
+ if(r.split('#')[0].includes('?')){failures.push({path,reference,reason:'UNSUPPORTED_QUERY'});continue;}
  let decoded:string;try{decoded=decodeURIComponent(r.split(/[?#]/)[0]);}catch{failures.push({path,reference,reason:'INVALID_PATH'});continue;}
  if(previewRelativeOnly&&decoded.startsWith('/')){failures.push({path,reference,reason:'PREVIEW_ROOT_ABSOLUTE'});continue;}
  const resolved=posix.normalize(decoded.startsWith('/')?decoded.slice(1):posix.join(posix.dirname(path),decoded));
