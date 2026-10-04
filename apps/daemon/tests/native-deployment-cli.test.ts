@@ -10,7 +10,7 @@ let requests: { path: string; method: string; body: unknown }[];
 const operationId = 'a'.repeat(64);
 beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), 'native-cli-'));
-  cookie = `foldy_browser_session=${randomBytes(32).toString('base64url')}`;
+  cookie = `foldy_deploying_session=${randomBytes(32).toString('base64url')}`;
   await writeFile(join(root, 'session'), cookie, { mode: 0o600 });
   await writeFile(join(root, 'input'), '{}', { mode: 0o600 });
   requests = [];
@@ -65,4 +65,12 @@ test('server failure bodies cannot reflect credential values', async () => {
   server.removeAllListeners('request'); server.on('request', (_req, res) => { res.writeHead(500, { 'content-type': 'application/json' }); res.end(JSON.stringify({ message: cookie })); });
   const result = await run(['inspect', '--daemon-url', origin, '--credential-file', join(root, 'session'), '--operation-id', operationId]);
   expect(result.code).toBe(1); expect(result.output).not.toContain(cookie);
+});
+test('viewer credential cannot be submitted as a deploying principal', async () => {
+  const viewer = `foldy_browser_session=${randomBytes(32).toString('base64url')}`;
+  await writeFile(join(root, 'session'), viewer, { mode: 0o600 });
+  const result = await run(['inspect', ...flags(), '--operation-id', operationId]);
+  expect(result.code).toBe(1);
+  expect(result.output).not.toContain(viewer);
+  expect(requests).toHaveLength(0);
 });

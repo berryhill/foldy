@@ -36,7 +36,8 @@ export async function runNativeDeploymentCli(args: string[]): Promise<void> {
     const base = new URL(flags['--daemon-url']!);
     if (base.username || base.password || base.search || base.hash || base.pathname !== '/' || !['127.0.0.1', 'localhost', '[::1]'].includes(base.hostname) || !['http:', 'https:'].includes(base.protocol)) throw new Error();
     const cookie = (await privateFile(flags['--credential-file']!, 4096)).trim();
-    if (!/^foldy_browser_session=[A-Za-z0-9._-]+$/.test(cookie)) throw new Error();
+    // A shared viewer unlock must never be supplied as factory deploying authority.
+    if (!/^foldy_deploying_session=[A-Za-z0-9._-]+$/.test(cookie)) throw new Error();
     const id = flags['--operation-id'];
     if ((command === 'inspect' || command === 'reconcile') && !/^[a-f0-9]{64}$/.test(id ?? '')) throw new Error();
     if ((command === 'prepare' || command === 'execute') && id !== undefined) throw new Error();

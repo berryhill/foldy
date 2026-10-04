@@ -67,6 +67,10 @@ test('no owner resolver fails closed even when a viewer session exists', async (
    const availability = await fetch(base+'/api/foldy/native-deployments/availability', {headers:{origin:base,cookie}});
    expect(availability.status).toBe(503);
    expect((await availability.json() as {error:{code:string}}).error.code).toBe('FOLDY_OWNER_NOT_CONFIGURED');
+   const unissued = `foldy_deploying_session=${randomBytes(32).toString('base64url')}`;
+   const stillBlocked = await fetch(base+'/api/foldy/native-deployments/availability', {headers:{origin:base,cookie:unissued}});
+   expect(stillBlocked.status).toBe(503);
+   expect((await stillBlocked.json() as {error:{code:string}}).error.code).toBe('FOLDY_OWNER_NOT_CONFIGURED');
    const response = await fetch(base+'/api/foldy/native-deployments/prepare', {method:'POST',headers:{origin:base,cookie,'content-type':'application/json'},body:JSON.stringify(s.request)});
    expect(response.status).toBe(503);
    expect(await response.json()).toEqual({ error: {
