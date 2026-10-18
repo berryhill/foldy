@@ -54,7 +54,7 @@ test('fresh claim establishes owner password; ordinary login preserves MCP, rese
   assert.ok(!p.logs().includes(password)&&!p.logs().includes(replacement)&&!p.logs().includes(recovery));
  }finally{if(p){const exited=once(p.child,'exit');p.child.kill();await exited;}rmSync(f.root,{recursive:true,force:true});}
 });
-test('invalid login attempts from a shared source do not lock out the valid owner password',async()=>{
+test('invalid login attempts from a shared source exhaust its temporary budget',async()=>{
  const f=fixture(),password=opaque(),wrong=opaque();let p:Awaited<ReturnType<typeof launch>>|undefined;
  try{
   p=await launch(f);const u=p.url;
@@ -63,6 +63,20 @@ test('invalid login attempts from a shared source do not lock out the valid owne
   assert.equal((await post(u+'/api/owner/logout',{},u,{cookie})).status,200);
   for(let i=0;i<20;i++)assert.ok([401,429].includes((await post(u+'/api/owner/login',{password:wrong},u)).status));
   const valid=await post(u+'/api/owner/login',{password},u);
-  assert.equal(valid.status,200);
+  assert.equal(valid.status,429);
+ }finally{if(p){const exited=once(p.child,'exit');p.child.kill();await exited;}rmSync(f.root,{recursive:true,force:true});}
+});
+test('distinct guesses exhaust a source budget without blocking owner revocation',async()=>{
+ const f=fixture(),password=opaque();let p:Awaited<ReturnType<typeof launch>>|undefined;
+ try{
+  p=await launch(f);const u=p.url;
+  const claim=await post(u+'/api/claim',{assertion:f.assertion,password},u);
+  const owner={cookie:claim.headers.get('set-cookie')!.split(';')[0]};
+  const grant=await (await post(u+'/api/mcp-grants',{},u,owner)).json();
+  let limited=false;
+  for(let i=0;i<12;i++)if((await post(u+'/api/owner/login',{password:opaque()},u)).status===429)limited=true;
+  assert.equal(limited,true,'distinct candidates must share a source budget');
+  assert.equal((await post(u+'/api/mcp-grants/revoke',{grantId:grant.grantId},u,owner)).status,200);
+  assert.equal((await fetch(u+'/mcp',{headers:{authorization:'Bearer '+grant.token}})).status,401);
  }finally{if(p){const exited=once(p.child,'exit');p.child.kill();await exited;}rmSync(f.root,{recursive:true,force:true});}
 });

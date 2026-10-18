@@ -3,6 +3,22 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { writeFileSync, readFileSync } from 'node:fs';
 import { startFoldy } from '../lib/playwright/foldy-runtime.js';
 
+test('preserved copy requires explicit access and renders unchanged content with ChatGPT guidance at both widths',async({browser},info)=>{
+ const runtime=await startFoldy(undefined,true),context=await browser.newContext({ignoreHTTPSErrors:true}),page=await context.newPage();
+ const errors:string[]=[];page.on('pageerror',e=>errors.push(e.message));page.on('dialog',d=>d.accept());const viewing=randomBytes(24).toString('hex');
+ try{
+  await page.goto(runtime.url+'/owner');await page.getByLabel('One-use owner key').fill(runtime.assertion);await page.getByLabel('New owner password').fill(randomBytes(24).toString('hex'));await page.getByRole('button',{name:'Claim ownership',exact:true}).click();
+  await expect(page.getByRole('heading',{name:'Choose reader access'})).toBeVisible();expect((await context.request.get(runtime.url+'/')).status()).toBe(423);
+  await page.getByLabel('New viewing password').fill(viewing);await page.getByRole('button',{name:'Require password and continue'}).click();await expect(page.getByRole('heading',{name:'Review what’s next'})).toBeVisible();
+  expect((await context.request.get(runtime.url+'/')).status()).toBe(401);
+  await page.locator('#connect-chatgpt summary').click();await expect(page.locator('#connect-chatgpt')).toContainText('project-1');
+  for(const width of [1280,390]){await page.setViewportSize({width,height:844});await expect(page.locator('#connect-chatgpt')).toContainText(runtime.url+'/mcp');expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);}
+  await page.goto(runtime.url+'/unlock');await page.getByLabel('Viewing password',{exact:true}).fill(viewing);await page.getByRole('button',{name:'Unlock',exact:true}).click();await expect(page.getByRole('heading',{name:'Immutable Foldy'})).toBeVisible();
+  for(const width of [1280,390]){await page.setViewportSize({width,height:844});await expect(page.getByRole('heading',{name:'Immutable Foldy'})).toBeVisible();expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);}
+  expect(errors).toEqual([]);
+ }finally{await context.close();await runtime.close(info.status!==info.expectedStatus);}
+});
+
 test('stale competing proposals refresh safely, request review and close with history', async ({browser},info)=>{
  const runtime=await startFoldy();const context=await browser.newContext({ignoreHTTPSErrors:true});const page=await context.newPage();
  const errors:string[]=[];page.on('pageerror',e=>errors.push(e.message));page.on('dialog',d=>d.accept());
@@ -102,6 +118,23 @@ test('standalone owner keyboard claim, review, publication and reader separation
   await expect(page.getByRole('heading',{name:'Review what’s next'})).toBeVisible();
   await expect(page.getByRole('heading',{name:'Connect assistants',exact:true})).toBeVisible();
   const manifest=await (await owner.request.get(runtime.url+'/mcp/manifest.json')).json();
+  const connect=page.locator('#connect-chatgpt');
+  await expect(connect.getByText('Connect ChatGPT',{exact:true})).toBeVisible();
+  await connect.getByText('Connect ChatGPT',{exact:true}).click();
+  const endpoint=new URL(manifest.endpoint,runtime.url).href;
+  for(const value of [manifest.instanceId,manifest.projectId,manifest.workbookId,manifest.currentPublishedRevisionId,endpoint]){
+   await expect(connect.getByRole('definition').filter({hasText:value}).first()).toBeVisible();
+  }
+  await expect(connect.getByRole('link',{name:'Official ChatGPT connection guide'})).toHaveAttribute('href','https://developers.openai.com/apps-sdk/deploy/connect-chatgpt');
+  await expect(connect).toContainText('get_project and list_pages');
+  await expect(connect).toContainText('foldy:read only');
+  await owner.grantPermissions(['clipboard-read','clipboard-write']);
+  await connect.getByRole('button',{name:'Copy MCP endpoint (no credentials)'}).click();
+  expect(await page.evaluate(()=>navigator.clipboard.readText())).toBe(endpoint);
+  await page.setViewportSize({width:390,height:844});
+  await expect(connect.getByText('Connect ChatGPT',{exact:true})).toBeVisible();
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+  await page.setViewportSize({width:1280,height:720});
   const discoveryURL=new URL(manifest.authenticationDiscovery.protectedResourceMetadata,runtime.url).href;
   await expect(page.getByRole('link',{name:'OAuth discovery (preferred)'})).toHaveAttribute('href',discoveryURL);
   expect((await owner.request.get(discoveryURL)).status()).toBe(200);

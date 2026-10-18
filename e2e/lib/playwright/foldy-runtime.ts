@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createHash, randomBytes } from 'node:crypto';
@@ -6,14 +6,23 @@ import { spawn, execFileSync } from 'node:child_process';
 import { createServer } from 'node:net';
 import { once } from 'node:events';
 const hash = (v: string) => createHash('sha256').update(v).digest('hex');
-export async function startFoldy(backup?: string) {
+export async function startFoldy(backup?: string, preservedCopy=false) {
  const root = mkdtempSync(join(tmpdir(), 'foldy-browser-'));
- const bundle = join(root, 'bundle'); mkdirSync(bundle);
+ let bundle = join(root, 'bundle'); mkdirSync(bundle);
  if (backup === undefined) mkdirSync(join(root, 'state'),{mode:0o700});
  const html = '<!doctype html><h1>Immutable Foldy</h1>';
  writeFileSync(join(bundle, 'index.html'), html);
- const raw = JSON.stringify({schemaVersion:'foldy-release-bundle.v1',instanceId:'instance-1',projectId:'project-1',workbookId:'workbook-1',revisionId:'revision-1',runtimeImageDigest:`sha256:${'a'.repeat(64)}`,members:[{path:'index.html',mediaType:'text/html',bytes:Buffer.byteLength(html),sha256:hash(html),executableMode:0}]});
+ let raw = JSON.stringify({schemaVersion:'foldy-release-bundle.v1',instanceId:'instance-1',projectId:'project-1',workbookId:'workbook-1',revisionId:'revision-1',runtimeImageDigest:`sha256:${'a'.repeat(64)}`,members:[{path:'index.html',mediaType:'text/html',bytes:Buffer.byteLength(html),sha256:hash(html),executableMode:0}]});
  writeFileSync(join(bundle, 'manifest.json'), raw);
+ if(preservedCopy){
+  if(backup!==undefined)throw Error('Unsupported combined fixture');
+  const source=join(root,'reviewed-source');mkdirSync(source);writeFileSync(join(source,'index.html'),html);
+  const {schemaVersion,...revision}=JSON.parse(raw);
+  const plan=join(root,'migration-plan.json');writeFileSync(plan,JSON.stringify({schemaVersion:'foldy-preserved-copy-plan.v1',sourceProjectUrl:'https://original.example/projects/project-1',provenance:'Synthetic owner-reviewed immutable export for browser regression only',revision:{...revision,approvedRevisionId:'revision-1',frozen:true,runtimeVersion:'0.1.0'}}));
+  bundle=join(root,'migrated-bundle');
+  const report=JSON.parse(execFileSync(process.execPath,[resolve('../apps/foldy-runtime/dist/migrate.js'),'--source-dir',source,'--plan-file',plan,'--output-dir',bundle],{encoding:'utf8',stdio:['ignore','pipe','pipe']}));
+  if(!report.ok)throw Error('Migration fixture failed');raw=readFileSync(join(bundle,'manifest.json'),'utf8');
+ }
  if (backup !== undefined) {
   const custody=join(root,'custody');mkdirSync(custody,{mode:0o700});
   const backupFile=join(root,'backup.json'),authorizationFile=join(custody,'authorization.json'),target=join(root,'state');

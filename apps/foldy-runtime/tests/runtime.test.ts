@@ -27,6 +27,27 @@ async function launch(f: ReturnType<typeof fixture>) {
  child.kill(); assert.fail('runtime must start and expose a listener (no credentials logged)');
 }
 const post = (url:string,body:unknown,headers:Record<string,string>={})=>fetch(url,{method:'POST',headers:{'content-type':'application/json',...headers},body:JSON.stringify(body)});
+test('MCP session budget rejects excess, frees closed sessions and preserves revocation',async()=>{
+ const f=fixture();let p:Awaited<ReturnType<typeof launch>>|undefined;
+ try{
+  p=await launch(f);const u=p.url;
+  const claim=await post(u+'/api/claim',{assertion:f.assertion,password:randomBytes(24).toString('hex')});
+  const owner={cookie:claim.headers.get('set-cookie')!.split(';')[0],origin:u};
+  const grant=await (await post(u+'/api/mcp-grants',{},owner)).json();
+  const auth={authorization:'Bearer '+grant.token,accept:'application/json, text/event-stream'};
+  const init=()=>post(u+'/mcp',{jsonrpc:'2.0',id:1,method:'initialize',params:{protocolVersion:'2025-03-26',capabilities:{},clientInfo:{name:'budget',version:'1'}}},auth);
+  const ids:string[]=[];
+  for(let i=0;i<8;i++){const r=await init();assert.equal(r.status,200);ids.push(r.headers.get('mcp-session-id')!);}
+  assert.equal((await init()).status,429);
+  const live={...auth,'mcp-session-id':ids[0],'mcp-protocol-version':'2025-03-26'};
+  assert.equal((await post(u+'/mcp',{jsonrpc:'2.0',id:2,method:'tools/list'},live)).status,200);
+  assert.equal((await fetch(u+'/mcp',{method:'DELETE',headers:live})).status,200);
+  assert.equal((await init()).status,200);
+  assert.equal((await post(u+'/mcp',{jsonrpc:'2.0',id:3,method:'tools/list'},live)).status,404);
+  assert.equal((await post(u+'/api/mcp-grants/revoke',{grantId:grant.grantId},owner)).status,200);
+  assert.equal((await init()).status,401);
+ }finally{if(p){const exit=once(p.child,'exit');p.child.kill();await exit;}rmSync(f.root,{recursive:true,force:true});}
+});
 test('sealed bootstrap, owner/viewer/MCP separation, real protocol, immutable bytes and restart replay',async()=>{
  const f=fixture(); let p:Awaited<ReturnType<typeof launch>>|undefined;
  try {
@@ -96,6 +117,8 @@ test('versioned public tool snapshot matches effective read/draft tools and owne
    assert.equal(response.status,200);return (await response.json()).result.tools;
   };
   const read=await effective(['foldy:read']),draft=await effective(['foldy:read','foldy:draft:write']);
+  assert.ok(read.every((tool:any)=>tool.annotations?.readOnlyHint===true && tool.annotations?.destructiveHint===false && tool.annotations?.openWorldHint===false));
+  assert.ok(draft.filter((tool:any)=>manifest.capabilities.draftTools.includes(tool.name)).every((tool:any)=>tool.annotations?.readOnlyHint===false));
   assert.deepEqual(draft,manifest.capabilities.toolSchemas);
   assert.deepEqual(read,manifest.capabilities.toolSchemas.filter((tool:any)=>!manifest.capabilities.draftTools.includes(tool.name)));
   assert.deepEqual(manifest.capabilities.draftTools,['refresh_update_proposal','create_update','create_page','remove_page','move_page','update_page','save_update_revision','submit_update_for_review']);

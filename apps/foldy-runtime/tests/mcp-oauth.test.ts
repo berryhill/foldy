@@ -8,6 +8,7 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { createServer } from 'node:http';
 import { McpOAuth } from '../dist/mcp-oauth.js';
+import { SUPPORTED_PROTOCOL_VERSIONS } from '@modelcontextprotocol/sdk/types.js';
 import type { OwnerAuthority } from '../src/owner-authority.js';
 const hash = (v: string) => createHash('sha256').update(v).digest('hex');
 test('registration capacity expires without eviction; continuation expires and cannot authorize', async t => {
@@ -66,6 +67,21 @@ test('real process OAuth consent/PKCE, resource binding, safe MCP read, revocati
   assert.equal((await form('/oauth/token',exchange)).status,400);assert.equal((await form('/oauth/token',{grant_type:'refresh_token'})).status,400);
   const custody=readFileSync(join(state,'authority.json'),'utf8');assert.ok(!custody.includes(token.access_token));assert.ok(!custody.includes(code));assert.equal(statSync(join(state,'authority.json')).mode&0o077,0);
   const auth={authorization:`Bearer ${token.access_token}`,accept:'application/json, text/event-stream'};
+  const negotiatedSessions: Record<string,string>[] = [];
+  const mcpManifest=await (await fetch(origin+'/mcp/manifest.json')).json();
+  assert.deepEqual(mcpManifest.supportedProtocolVersions,SUPPORTED_PROTOCOL_VERSIONS);
+  for(const offered of ['2025-11-25','2025-03-26','2099-01-01']) {
+    const request={jsonrpc:'2.0',id:10,method:'initialize',params:{protocolVersion:offered,capabilities:{},clientInfo:{name:'negotiation-proof',version:'1'}}};
+    assert.equal((await json('/mcp',request,{accept:auth.accept})).status,401);
+    const response=await json('/mcp',request,auth);assert.equal(response.status,200);
+    const negotiated=(await response.json()).result.protocolVersion;
+    assert.ok(mcpManifest.supportedProtocolVersions.includes(negotiated));
+    assert.equal(negotiated,offered==='2099-01-01'?mcpManifest.supportedProtocolVersions[0]:offered);
+    const headers={...auth,'mcp-session-id':response.headers.get('mcp-session-id')!,'mcp-protocol-version':negotiated};
+    negotiatedSessions.push(headers);
+    assert.equal((await json('/mcp',{jsonrpc:'2.0',method:'notifications/initialized'},headers)).status,202);
+    const listed=await (await json('/mcp',{jsonrpc:'2.0',id:11,method:'tools/list'},headers)).json();assert.ok(listed.result.tools.length);
+  }
   const init=await json('/mcp',{jsonrpc:'2.0',id:1,method:'initialize',params:{protocolVersion:'2025-03-26',capabilities:{},clientInfo:{name:'oauth-proof',version:'1'}}},auth);assert.equal(init.status,200);
   const session={...auth,'mcp-session-id':init.headers.get('mcp-session-id')!,'mcp-protocol-version':'2025-03-26'};
   await json('/mcp',{jsonrpc:'2.0',method:'notifications/initialized'},session);
@@ -73,6 +89,7 @@ test('real process OAuth consent/PKCE, resource binding, safe MCP read, revocati
   const read=await (await json('/mcp',{jsonrpc:'2.0',id:3,method:'tools/call',params:{name:'get_file',arguments:{path:'index.html'}}},session)).json();assert.equal(JSON.parse(read.result.content[0].text).observedRevisionId,'revision-1');
   const denied=await (await json('/mcp',{jsonrpc:'2.0',id:4,method:'tools/call',params:{name:'publish_update',arguments:{}}},session)).json();assert.ok(denied.error||denied.result.isError);
   assert.equal((await form('/oauth/revoke',{client_id:client.client_id,token:token.access_token})).status,200);
+  for(const headers of negotiatedSessions) assert.equal((await json('/mcp',{jsonrpc:'2.0',id:12,method:'tools/list'},headers)).status,401);
   const revoked=await json('/mcp',{jsonrpc:'2.0',id:5,method:'tools/list'},session);assert.equal(revoked.status,401);assert.match(revoked.headers.get('www-authenticate')!,/oauth-protected-resource\/mcp/);
   const draftPage=await authorize({...request,scope:'foldy:read foldy:draft:write'},owner);const draftTicket=(await draftPage.text()).match(/name="ticket" value="([^"]+)"/)![1];
   const draftConsent=await form('/oauth/consent',{ticket:draftTicket,decision:'allow'},owner);const draftCode=new URL(draftConsent.headers.get('location')!).searchParams.get('code')!;

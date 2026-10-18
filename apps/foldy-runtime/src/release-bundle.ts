@@ -1,5 +1,6 @@
 import { constants, closeSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync, chmodSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
+import { staticHtmlInspection } from './static-html.js';
 import { digest, loadBundle, safePath, policyPath, policyBytes, parsePolicy, type Manifest, type Member } from './bundle.js';
 
 export interface ApprovedRevision {
@@ -18,18 +19,20 @@ export interface ReleaseAdapter {
 }
 const invalid = (): never => { throw Error('RELEASE_INVALID'); };
 const metadataPath = 'runtime-release.json';
+export interface PreservedCopy { sourceProjectUrl:string; sourceMembersDigest:string }
+export const migrationPath='runtime-migration.json';
 const media = new Set(['text/html','text/css','text/plain','application/json','image/png','image/jpeg','image/webp','font/woff2']);
 const custody = /(?:^|[/_.-])(?:wallet|signer|payment|credential|credentials|secret|secrets|private|authority|bootstrap|recovery|session|sessions|grants|pepper|state)(?:$|[/_.-])|\.(?:sqlite|db|pem|key|p12)$/i;
 const keyMaterial = /-----BEGIN [A-Z ]*PRIVATE KEY-----|(?:"|\b)(?:ownerVerifier|passwordVerifier|access_token|refresh_token|private_key|client_secret|seedPhrase|mnemonic)(?:"|\b)\s*[:=]/i;
 function exact(value: object, keys: string[]) { if (Object.keys(value).some(k => !keys.includes(k))) invalid(); }
-function contentPath(path: string) { if (!safePath(path) || path === 'manifest.json' || path === metadataPath || custody.test(path)) invalid(); }
+function contentPath(path: string) { if (!safePath(path) || path === 'manifest.json' || path === metadataPath || path === migrationPath || custody.test(path)) invalid(); }
 
 /** Conservative static closure: dynamic/remote references must first be
  * materialized by the trusted adapter. JavaScript is not a v1 runtime media type. */
 function verifyReferences(bytes: Buffer, type: string, path: string, paths: Set<string>) {
   if (type !== 'text/html' && type !== 'text/css') return;
-  const text = bytes.toString('utf8');
-  if (/<script\b|\bsrcset\s*=|\b(?:src|href)\s*=\s*[^\s"']|\\|&(?:#\d+|#x[\da-f]+|[a-z]+);/i.test(text)) invalid();
+  const text = type === 'text/html' ? staticHtmlInspection(bytes.toString('utf8')) : bytes.toString('utf8');
+  if (/<script\b|\bon\w+\s*=|<(?:iframe|object|embed|form|base)\b|\bsrcset\s*=|\b(?:src|href)\s*=\s*[^\s"']|\\|&(?:#\d+|#x[\da-f]+|[a-z]+);/i.test(text)) invalid();
   const refs = [...text.matchAll(/\b(?:src|href|poster|data)\s*=\s*["']([^"']*)["']/gi)].map(m => m[1]);
   refs.push(...[...text.matchAll(/url\(\s*["']?([^\s"')]+)["']?\s*\)/gi)].map(m => m[1]));
   refs.push(...[...text.matchAll(/@import\s*["']([^"']+)["']/gi)].map(m => m[1]));
@@ -47,7 +50,21 @@ function verifyReferences(bytes: Buffer, type: string, path: string, paths: Set<
  * Writes only to a fresh directory and verifies the result with the real loader.
  * Caller owns a non-adversarial output parent; immutable adapter snapshots are
  * required (filesystem directory mutation during export is not supported). */
-export function buildReleaseBundle(adapter: ReleaseAdapter, outputDirectory: string) {
+export function buildReleaseBundle(adapter: ReleaseAdapter, outputDirectory: string, preservedCopy?:PreservedCopy) {
+  const prepared = prepareReleaseBundle(adapter,preservedCopy);
+  const output = resolve(outputDirectory);
+  if (output === prepared.sourceDirectory || output.startsWith(prepared.sourceDirectory + '/') || prepared.sourceDirectory.startsWith(output + '/')) invalid();
+  mkdirSync(output, { mode:0o755 });
+  try {
+    for (const member of prepared.manifest.members) { const path = join(output,member.path); mkdirSync(dirname(path),{recursive:true,mode:0o755}); writeFileSync(path,prepared.files.get(member.path)!,{flag:'wx',mode:0o444}); chmodSync(path,0o444); }
+    writeFileSync(join(output,'manifest.json'),prepared.manifestBytes,{flag:'wx',mode:0o444});
+    loadBundle(output,prepared.bundleDigest);
+    return { manifest:prepared.manifest, manifestBytes:prepared.manifestBytes, bundleDigest:prepared.bundleDigest, directory:output };
+  } catch (error) { rmSync(output,{recursive:true,force:true}); throw error; }
+}
+
+/** Performs the same full inventory and compatibility validation without creating a target. */
+export function prepareReleaseBundle(adapter: ReleaseAdapter, preservedCopy?:PreservedCopy) {
   const snapshot = adapter.snapshot();
   const revision = structuredClone(snapshot.revision);
   exact(revision, ['instanceId','projectId','workbookId','revisionId','runtimeImageDigest','runtimeVersion','approvedRevisionId','frozen','members','protectedPaths']);
@@ -85,6 +102,14 @@ export function buildReleaseBundle(adapter: ReleaseAdapter, outputDirectory: str
   if (files.size !== declared.size || !files.has('index.html')) invalid();
   for (const [path, bytes] of files) verifyReferences(bytes, declared.get(path)!.mediaType, path, new Set(files.keys()));
   const existingPolicy=files.get(policyPath);
+  if(preservedCopy){
+    exact(preservedCopy,['sourceProjectUrl','sourceMembersDigest']);
+    const url=new URL(preservedCopy.sourceProjectUrl);
+    if(url.protocol!=='https:'||url.username||url.password||url.search||url.hash||!/^[a-f0-9]{64}$/.test(preservedCopy.sourceMembersDigest))invalid();
+    const bytes=Buffer.from(JSON.stringify({schemaVersion:'foldy-preserved-copy.v1',...preservedCopy,accessConfigurationRequired:true})+'\n');
+    files.set(migrationPath,bytes);
+    declared.set(migrationPath,{path:migrationPath,mediaType:'application/json',bytes:bytes.length,sha256:digest(bytes),executableMode:0});
+  }
   if(existingPolicy){
     const approved=parsePolicy({bytes:existingPolicy,mediaType:declared.get(policyPath)!.mediaType});
     if(revision.protectedPaths!==undefined&&JSON.stringify(approved)!==JSON.stringify(parsePolicy({bytes:policyBytes(revision.protectedPaths),mediaType:'application/json'})))throw Error('POLICY_MISMATCH');
@@ -98,13 +123,7 @@ export function buildReleaseBundle(adapter: ReleaseAdapter, outputDirectory: str
   const members = [...declared.values()].sort((a,b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0).map(m => ({ path:m.path, mediaType:m.mediaType, bytes:m.bytes, sha256:m.sha256, executableMode:0 }));
   const manifest: Manifest = { schemaVersion:'foldy-release-bundle.v1', instanceId:revision.instanceId, projectId:revision.projectId, workbookId:revision.workbookId, revisionId:revision.revisionId, runtimeImageDigest:revision.runtimeImageDigest, members };
   const manifestBytes = Buffer.from(JSON.stringify(manifest) + '\n');
-  const bundleDigest = digest(manifestBytes), output = resolve(outputDirectory);
-  if (output === root || output.startsWith(root + '/')) invalid();
-  mkdirSync(output, { mode:0o755 });
-  try {
-    for (const member of members) { const path = join(output,member.path); mkdirSync(dirname(path),{recursive:true,mode:0o755}); writeFileSync(path,files.get(member.path)!,{flag:'wx',mode:0o444}); chmodSync(path,0o444); }
-    writeFileSync(join(output,'manifest.json'),manifestBytes,{flag:'wx',mode:0o444});
-    loadBundle(output,bundleDigest);
-    return { manifest, manifestBytes, bundleDigest, directory:output };
-  } catch (error) { rmSync(output,{recursive:true,force:true}); throw error; }
+  if(members.length>1024 || manifestBytes.length>1024*1024 || [...files.values()].reduce((sum,bytes)=>sum+bytes.length,0)>32*1024*1024)invalid();
+  const bundleDigest = digest(manifestBytes);
+  return { manifest, manifestBytes, bundleDigest, sourceDirectory:root, files };
 }

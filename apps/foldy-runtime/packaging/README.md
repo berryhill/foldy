@@ -6,6 +6,8 @@ executes `node dist/main.js` and consumes `src/bundle.ts`'s exact v1 manifest.
 
 ## Release export
 
+For original-project preserved-copy packaging, use the [offline migration CLI and compatibility runbook](preserved-copy.md). It validates before creating a new bundle, keeps source bytes/authority untouched, and requires explicit owner access configuration on the copy. This does not provision or claim native hosting.
+
 Call `buildReleaseBundle(adapter, freshOutputDirectory)` from
 `dist/release-bundle.js`. The trusted factory adapter supplies an immutable,
 content-only directory and exact `ApprovedRevision` inventory. It must authenticate
@@ -81,11 +83,11 @@ code, wallet/signing tools or payment configuration.
   Daemon-managed data follows root AGENTS.md, not this standalone mount contract.
 - Set `FOLDY_BUNDLE_DIGEST` to the verified manifest digest. The image sets
   `FOLDY_BUNDLE_DIR=/opt/foldy/bundle`, `FOLDY_PORT=8080`, `FOLDY_STATE_DIR=/data`.
-- Production uses native TLS. Set exact `FOLDY_PUBLIC_HOST`,
+- Direct production TLS remains the default. Set exact `FOLDY_PUBLIC_HOST`,
   `FOLDY_TLS_KEY_FILE`, `FOLDY_TLS_CERT_FILE` pointing at read-only protected mounts.
-  A plaintext reverse proxy upstream is not a supported production substitute.
-  `FOLDY_DEV_LOOPBACK=1` binds only 127.0.0.1 inside the container and is not a
-  public container deployment option.
+  A separate **same-host manual deployment** may use `FOLDY_PROXY_PUBLIC_ORIGIN`
+  with a trusted local HTTPS reverse proxy; see `manual-host.md`. This is not a
+  remote/container plaintext upstream. `FOLDY_DEV_LOOPBACK=1` remains test-only.
 - First start requires `FOLDY_BOOTSTRAP_FILE`: protected JSON with `instanceId`,
   `verifier`, `expiresAt`, injected by the authenticated deploying principal.
   File must be UID 1000-owned, single-link, mode 0600, inside a 0700 directory;
