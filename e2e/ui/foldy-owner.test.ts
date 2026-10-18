@@ -13,8 +13,8 @@ test('preserved copy requires explicit access and renders unchanged content with
   expect((await context.request.get(runtime.url+'/')).status()).toBe(401);
   await page.locator('#connect-chatgpt summary').click();await expect(page.locator('#connect-chatgpt')).toContainText('project-1');
   for(const width of [1280,390]){await page.setViewportSize({width,height:844});await expect(page.locator('#connect-chatgpt')).toContainText(runtime.url+'/mcp');expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);}
-  await page.goto(runtime.url+'/unlock');await page.getByLabel('Viewing password',{exact:true}).fill(viewing);await page.getByRole('button',{name:'Unlock',exact:true}).click();await expect(page.getByRole('heading',{name:'Immutable Foldy'})).toBeVisible();
-  for(const width of [1280,390]){await page.setViewportSize({width,height:844});await expect(page.getByRole('heading',{name:'Immutable Foldy'})).toBeVisible();expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);}
+  await page.goto(runtime.url+'/unlock');await page.getByLabel('Viewing password',{exact:true}).fill(viewing);await page.getByRole('button',{name:'Unlock',exact:true}).click();await expect(page.frameLocator('iframe[title="Published Foldy"]').getByRole('heading',{name:'Immutable Foldy'})).toBeVisible();
+  for(const width of [1280,390]){await page.setViewportSize({width,height:844});await expect(page.frameLocator('iframe[title="Published Foldy"]').getByRole('heading',{name:'Immutable Foldy'})).toBeVisible();expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);}
   expect(errors).toEqual([]);
  }finally{await context.close();await runtime.close(info.status!==info.expectedStatus);}
 });
@@ -179,8 +179,8 @@ test('standalone owner keyboard claim, review, publication and reader separation
   await clickMutation('Publish this version','publish_update');
   await expect(page.getByRole('status')).toContainText('Published');
   expect((await post('get_update',{updateId:created.updateId})).value.state).toBe('Published');
-  await reader.goto(runtime.url); await expect(reader.getByRole('heading',{name:'Published welcome'})).toBeVisible();
-  expect(await (await viewer.request.get(runtime.url)).body()).toEqual(candidateBytes);
+  await reader.goto(runtime.url); await expect(reader.frameLocator('iframe[title="Published Foldy"]').getByRole('heading',{name:'Published welcome'})).toBeVisible();
+  expect(await (await viewer.request.get(runtime.url+'/_document/index.html')).body()).toEqual(candidateBytes);
   await page.getByRole('button',{name:'All updates'}).click();
   const downloadEvent=page.waitForEvent('download');
   await page.getByRole('button',{name:'Download backup',exact:true}).click();
@@ -202,7 +202,7 @@ test('standalone owner keyboard claim, review, publication and reader separation
   await reader.keyboard.insertText(password);
   const unlocked=reader.waitForResponse(r=>new URL(r.url()).pathname==='/api/viewer/unlock'&&r.request().method()==='POST');
   await reader.keyboard.press('Enter');expect((await unlocked).status()).toBe(200);
-  await expect(reader.getByRole('heading',{name:'Published welcome'})).toBeVisible();
+  await expect(reader.frameLocator('iframe[title="Published Foldy"]').getByRole('heading',{name:'Published welcome'})).toBeVisible();
   expect((await viewer.request.post(runtime.url+'/api/operations',{headers:{origin:runtime.url},data:{name:'list_updates',arguments:{}}})).status()).toBe(401);
   await reader.goto(runtime.url+'/owner');await expect(reader.getByRole('heading',{name:'Sign in as owner'})).toBeVisible();
   await reader.goto(runtime.url+'/unlock');
@@ -257,7 +257,8 @@ test('authored preview is inert, isolated and uses revision-local styles', async
   await expect(frame.locator('script,iframe,meta[http-equiv="refresh"]')).toHaveCount(0);
   await expect(page.getByRole('heading',{name:'Hostile author preview'})).toBeVisible();
   expect(page.url()).toBe(runtime.url+'/owner');expect(context.pages()).toHaveLength(1);
-  const child=page.frames().find(f=>f.url()==='about:srcdoc'&&f!==page.mainFrame());expect(child).toBeTruthy();
+  const previewElement=await page.locator('iframe[title="After: index.html"]').elementHandle();
+  const child=await previewElement?.contentFrame();expect(child).toBeTruthy();
   expect(await child!.evaluate(()=>{try{void parent.document;return false;}catch{return true;}})).toBe(true);
   expect(await child!.evaluate(()=>{try{void document.cookie;return false;}catch{return true;}})).toBe(true);
   await child!.evaluate(()=>{const s=document.createElement('script');s.textContent="document.body.textContent='DYNAMIC EXECUTED';fetch('https://evil.invalid/dynamic')";document.body.append(s);});
@@ -265,6 +266,8 @@ test('authored preview is inert, isolated and uses revision-local styles', async
   expect(unexpected).toEqual([]);
   expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);await page.screenshot({path:info.outputPath('safe-preview-desktop.png'),fullPage:true});
   await page.setViewportSize({width:390,height:844});expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);await page.screenshot({path:info.outputPath('safe-preview-390.png'),fullPage:true});
-  await page.getByText('Show source',{exact:true}).nth(1).click();await expect(page.locator('pre').nth(1)).toBeVisible();
+  const afterPanel=page.locator('.comparison > div').filter({has:page.locator('iframe[title="After: index.html"]')});
+  await afterPanel.locator('summary').focus();await afterPanel.locator('summary').press('Enter');
+  await expect(afterPanel.locator('pre')).toBeVisible();
  }finally{await context.close();await runtime.close(info.status!==info.expectedStatus);}
 });

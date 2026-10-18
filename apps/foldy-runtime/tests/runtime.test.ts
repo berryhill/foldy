@@ -62,14 +62,15 @@ test('sealed bootstrap, owner/viewer/MCP separation, real protocol, immutable by
  const owner={cookie:cookie.split(';')[0]};
  assert.equal((await post(u+'/api/claim',{assertion:f.assertion,password:randomBytes(24).toString('hex')})).status,409);
  assert.equal((await fetch(u+'/api/readiness',{headers:owner})).status,200);
- assert.equal(await (await fetch(u+'/')).text(),'<!doctype html><h1>Immutable Foldy</h1>');
+ const root=await (await fetch(u+'/')).text();assert.match(root,/Connect ChatGPT/);assert.match(root,/src="\/_document\/index.html" sandbox=""/);
+ assert.equal(await (await fetch(u+'/_document/index.html')).text(),'<!doctype html><h1>Immutable Foldy</h1>');
  const rival=spawn(process.execPath,[resolve('dist/main.js')],{env:f.env,stdio:'ignore'});
  // Parallel runtime suites can delay process startup; the invariant is that a
  // second writer exits, not that the OS schedules its exit within 750ms.
  const race=await Promise.race([once(rival,'exit').then(([code])=>code),new Promise(r=>setTimeout(()=>r('still-running'),5000))]);
  rival.kill(); assert.notEqual(race,'still-running','a second process must not own the same state');
  writeFileSync(join(f.bundle,'index.html'),'tampered');
- assert.match(await (await fetch(u+'/')).text(),/Immutable Foldy/);
+ assert.match(await (await fetch(u+'/_document/index.html')).text(),/Immutable Foldy/);
  assert.equal((await post(u+'/api/mcp-grants',{})).status,401);
  const issued=await post(u+'/api/mcp-grants',{},owner); assert.equal(issued.status,201); const grant=await issued.json();
  assert.equal((await fetch(u+'/api/readiness',{headers:{authorization:`Bearer ${grant.token}`}})).status,401);
@@ -101,7 +102,8 @@ test('versioned public tool snapshot matches effective read/draft tools and owne
  try{
   p=await launch(f);const origin=p.url;
   const claim=await post(origin+'/api/claim',{assertion:f.assertion,password:randomBytes(24).toString('hex')});const owner={cookie:claim.headers.get('set-cookie')!.split(';')[0],origin};
-  const manifest=await (await fetch(origin+'/mcp/manifest.json')).json();
+  assert.equal((await fetch(origin+'/mcp/manifest.json')).status,401);
+  const manifest=await (await fetch(origin+'/mcp/manifest.json',{headers:owner})).json();
   assert.equal(manifest.toolContractVersion,'foldy-tool-contract.v2');
   assert.ok(Array.isArray(manifest.capabilities.toolSchemas));
   assert.deepEqual(manifest.capabilities.tools,manifest.capabilities.toolSchemas.map((tool:any)=>tool.name));
@@ -198,7 +200,7 @@ test('MCP draft and owner publish share persistent domain and change live bytes'
  const base={projectId:'project-1',expectedBaseRevisionId:'revision-1'};
  const created=await call('create_update',{...base,title:'Live update',idempotencyKey:'create'});let ref={...base,updateId:created.updateId,expectedUpdateRevisionId:created.updateRevisionId};
  const edit=await call('update_page',{...ref,path:'index.html',content:'<!doctype html><h1>Published live</h1>',idempotencyKey:'edit'});ref.expectedUpdateRevisionId=edit.updateRevisionId;
- assert.match(await (await fetch(p.url+'/')).text(),/Immutable Foldy/);
+ assert.match(await (await fetch(p.url+'/_document/index.html')).text(),/Immutable Foldy/);
  const op=async(name:string,args:unknown)=>(await post(p!.url+'/api/operations',{name,arguments:args},owner)).json();
  const reviewed=await op('get_update',{projectId:'project-1',updateId:created.updateId});assert.equal(reviewed.value.revision,edit.updateRevisionId);
  for(const name of ['approve_update_revision','publish_update','close_update']){const denied=await rpc(name,{...ref,idempotencyKey:name,reason:'attempt'});assert.ok(denied.error||denied.result.isError);}
@@ -211,10 +213,10 @@ test('MCP draft and owner publish share persistent domain and change live bytes'
  const rival=await call('create_update',{...base,title:'Concurrent proposal',idempotencyKey:'rival'});const rivalRef={...base,updateId:rival.updateId,expectedUpdateRevisionId:rival.updateRevisionId};await call('submit_update_for_review',{...rivalRef,idempotencyKey:'rival-submit'});await op('approve_update_revision',{...rivalRef,idempotencyKey:'rival-approve',reason:'reviewed'});
  const pubArgs={...ref,idempotencyKey:'publish',reason:'publish reviewed proposal'};const published=await op('publish_update',pubArgs);assert.equal(published.currentState,'Published');assert.deepEqual(await op('publish_update',pubArgs),published);
  assert.equal((await op('publish_update',{...rivalRef,idempotencyKey:'rival-publish',reason:'must conflict'})).code,'REVISION_CONFLICT');
- assert.match(await (await fetch(p.url+'/')).text(),/Published live/);
- assert.equal((await (await fetch(p.url+'/mcp/manifest.json')).json()).currentPublishedRevisionId,published.updateRevisionId);
+ assert.match(await (await fetch(p.url+'/_document/index.html')).text(),/Published live/);
+ assert.equal((await (await fetch(p.url+'/mcp/manifest.json',{headers:owner})).json()).currentPublishedRevisionId,published.updateRevisionId);
  const old=await call('get_file',{path:'index.html',atRevisionId:'revision-1'});assert.match(Buffer.from(old.value.bytes,'base64').toString(),/Immutable Foldy/);
- const exit=once(p.child,'exit');p.child.kill();await exit;p=await launch(f);assert.match(await (await fetch(p.url+'/')).text(),/Published live/);
+ const exit=once(p.child,'exit');p.child.kill();await exit;p=await launch(f);assert.match(await (await fetch(p.url+'/_document/index.html')).text(),/Published live/);
  assert.equal((await op('get_update',{updateId:created.updateId})).value.state,'Published');assert.deepEqual(await op('publish_update',pubArgs),published);
  }finally{if(p){const exit=once(p.child,'exit');p.child.kill();await exit;}rmSync(f.root,{recursive:true,force:true});}
 });

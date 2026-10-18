@@ -43,7 +43,7 @@ test('owner grant listing and exact opaque/OAuth session revocation through HTTP
  const init=async(token:string)=>{const auth={authorization:'Bearer '+token,accept:'application/json, text/event-stream'};const response=await json('/mcp',{jsonrpc:'2.0',id:1,method:'initialize',params:{protocolVersion:'2025-03-26',capabilities:{},clientInfo:{name:'admin-test',version:'1'}}},auth);assert.equal(response.status,200);return {...auth,'mcp-session-id':response.headers.get('mcp-session-id')!,'mcp-protocol-version':'2025-03-26'};};
  const opaqueSession=await init(first.token),oauthSession=await init(oauth.access_token);
  const listing=await (await get()).json();assert.equal(listing.grants.length,2);
- for(const g of listing.grants)assert.deepEqual(Object.keys(g).sort(),['active','expiresAt','grantId','kind','scopes']);
+ for(const g of listing.grants)assert.deepEqual(Object.keys(g).sort(),['active','expiresAt','grantId','kind','lastSuccessfulDraftAt','lastSuccessfulReadAt','scopes','verified']);
  const raw=JSON.stringify(listing);for(const token of [first.token,oauth.access_token]){assert.ok(!raw.includes(token));assert.ok(!raw.includes(hash(token)));}
  assert.equal((await fetch(origin+'/api/mcp-grants',{headers:opaqueSession})).status,401);
  assert.equal((await json('/api/mcp-grants/revoke-all',{},oauthSession)).status,401);

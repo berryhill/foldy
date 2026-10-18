@@ -35,7 +35,8 @@ test('public owner shell, trusted script, sealed and authenticated gates',async(
  assert.equal((await post(u+'/api/claim',{assertion:f.assertion,password:randomBytes(24).toString('hex')})).status,409);
  assert.equal((await post(u+'/api/operations',{name:'list_updates',arguments:{}})).status,401);
  assert.equal((await post(u+'/api/operations',{name:'list_updates',arguments:{}},owner)).status,200);
- const content=await fetch(u+'/');assert.equal(content.status,200);assert.match(content.headers.get('content-security-policy')!,/sandbox/);assert.ok(!content.headers.get('content-security-policy')!.includes('nonce-'));assert.match(await content.text(),/Immutable Foldy/);
+ const content=await fetch(u+'/');assert.equal(content.status,200);assert.match(await content.text(),/src="\/_document\/index.html" sandbox=""/);
+ const document=await fetch(u+'/_document/index.html');assert.equal(document.status,200);assert.match(document.headers.get('content-security-policy')!,/sandbox;.*frame-ancestors 'self'/);assert.ok(!document.headers.get('content-security-policy')!.includes('nonce-'));assert.equal(await document.text(),'<!doctype html><h1>Immutable Foldy</h1>');
  assert.equal((await fetch(u+'/owner?assertion=not-accepted')).status,400);
  }finally{if(p){const exit=once(p.child,'exit');p.child.kill();await exit;}rmSync(f.root,{recursive:true,force:true});}
 });

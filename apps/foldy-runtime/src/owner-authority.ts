@@ -3,7 +3,7 @@ import { constants, lstatSync, openSync, closeSync, readFileSync, writeFileSync,
 import { dirname, join, resolve } from 'node:path';
 import { deriveOwnerPassword, verifyOwnerPassword, validOwnerPasswordVerifier, type OwnerPasswordVerifier } from './owner-password.js';
 
-export type Grant = { grantId: string; verifier: string; expiresAt: number; scopes?: string[] };
+export type Grant = { grantId: string; verifier: string; expiresAt: number; scopes?: string[]; lastSuccessfulReadAt?: number; lastSuccessfulDraftAt?: number };
 export type AuthorityState = { instanceId: string; bundleDigest: string; ownerVerifier: string; ownerExpiresAt: number; generation: number; grants: Grant[]; ownerPassword?: OwnerPasswordVerifier };
 const MAX_AUTHORITY_BYTES = 1024 * 1024;
 const hash = (s: string) => createHash('sha256').update(s).digest('hex');
@@ -65,7 +65,7 @@ export class OwnerAuthority {
     if (!record(v) || !exact(v, ['instanceId','bundleDigest','ownerVerifier','ownerExpiresAt','generation','grants','ownerPassword']) || v.instanceId !== this.options.instanceId || v.bundleDigest !== this.options.bundleDigest || !verifier(v.ownerVerifier) || !time(v.ownerExpiresAt) || !time(v.generation) || !Array.isArray(v.grants) || v.grants.length > 10000 || (v.ownerPassword !== undefined && !validOwnerPasswordVerifier(v.ownerPassword))) invalid();
     const ids = new Set<string>();
     for (const g of v.grants) {
-      if (!record(g) || !exact(g,['grantId','verifier','expiresAt','scopes']) || typeof g.grantId !== 'string' || !g.grantId || ids.has(g.grantId) || !verifier(g.verifier) || !time(g.expiresAt) || (g.scopes !== undefined && (!Array.isArray(g.scopes) || !g.scopes.includes('foldy:read') || g.scopes.some((s: unknown) => s !== 'foldy:read' && s !== 'foldy:draft:write')))) invalid();
+      if (!record(g) || !exact(g,['grantId','verifier','expiresAt','scopes','lastSuccessfulReadAt','lastSuccessfulDraftAt']) || typeof g.grantId !== 'string' || !g.grantId || ids.has(g.grantId) || !verifier(g.verifier) || !time(g.expiresAt) || (g.lastSuccessfulReadAt !== undefined && (!time(g.lastSuccessfulReadAt) || g.lastSuccessfulReadAt > g.expiresAt)) || (g.lastSuccessfulDraftAt !== undefined && (!time(g.lastSuccessfulDraftAt) || g.lastSuccessfulDraftAt > g.expiresAt)) || (g.scopes !== undefined && (!Array.isArray(g.scopes) || !g.scopes.includes('foldy:read') || g.scopes.some((s: unknown) => s !== 'foldy:read' && s !== 'foldy:draft:write'))) || (g.lastSuccessfulDraftAt !== undefined && !g.scopes?.includes('foldy:draft:write'))) invalid();
       ids.add(g.grantId);
     }
     return v as AuthorityState;
