@@ -55,7 +55,7 @@ test('dry run produces deterministic report and no output state; actual bundle h
 }));
 const inertBlock = '<script type="application/json" id="discovery-render-state">\n{"projectId":"4eaa3bbc-793a-4ad8-b26b-b02f8775f618","text":"quoted \\"text\\"","reference":"url(https://example.invalid/inert)"}\n</script>';
 test('legacy discovery JSON data block is preserved byte-for-byte through dry run and release loader', () => fixture(f => {
-  const html = Buffer.from('<!doctype html><html><head></head><body><h1>Original</h1>' + inertBlock + '</body></html>');
+  const html = Buffer.from(`<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'"></head><body><h1>Original</h1>` + inertBlock + '</body></html>');
   writeFileSync(join(f.source, 'index.html'), html);
   Object.assign(f.plan.revision.members[0], { bytes: html.length, sha256: digest(html) }); f.save();
   assert.deepEqual(codes(f), []);

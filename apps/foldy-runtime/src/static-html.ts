@@ -22,7 +22,7 @@ export function staticHtmlInspection(text: string): string {
     const rest = text.slice(start);
     const doctype = /^<!doctype html\s*>/i.exec(rest);
     if (doctype) { parts.push(doctype[0]); cursor = start + doctype[0].length; continue; }
-    const tag = /^<\/?([a-z][a-z0-9:-]*)(?=[\t\n\r />])(?:[^"'<>]|"[^"'<>]*"|'[^"'<>]*')*>/i.exec(rest);
+    const tag = /^<\/?([a-z][a-z0-9:-]*)(?=[\t\n\r />])(?:[^"'<>]|"[^"<>]*"|'[^'<>]*')*>/i.exec(rest);
     if (!tag) invalid();
     const token = tag![0], name = tag![1].toLowerCase();
     if (name === 'script') {
