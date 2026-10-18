@@ -16,12 +16,15 @@ import { McpOAuth } from './mcp-oauth.js';
 import { ViewerAccess } from './viewer-access.js';
 import { sourceLimiter, viewerCookie, viewerRoute } from './viewer-http.js';
 import { ingressConfig, requestOrigin } from './ingress.js';
+import { grantEvidence, tunnelBinding } from './connect.js';
+import { clientUiRoute } from './client-ui.js';
 const required=(name:string)=>{const v=process.env[name];if(!v)throw Error('CONFIG_REQUIRED');return v;};
 const opaque=()=>randomBytes(32).toString('base64url');
 // SDK owns initialize validation and version negotiation. Discovery must list
 // exactly the same versions rather than a separately maintained allowlist.
 async function main(){
  const ingress=ingressConfig(process.env);
+ const tunnel=tunnelBinding(process.env.FOLDY_SECURE_MCP_TUNNEL_BINDING_FILE);
  const initial={directory:required('FOLDY_BUNDLE_DIR'),digest:required('FOLDY_BUNDLE_DIGEST')};
  const stateDir=resolve(required('FOLDY_STATE_DIR'));mkdirSync(stateDir,{recursive:true,mode:0o700});if(lstatSync(stateDir).isSymbolicLink())throw Error('STATE_INVALID');
  protectedAncestry(stateDir);
@@ -35,6 +38,13 @@ async function main(){
  const oauth=new McpOAuth(authority,identity.instanceId);
  const getState=()=>authority.state;
  function persist(next:AuthorityState){authority.persist(next);}
+ function recordToolSuccess(grantId:string,name:string){
+  const state=getState(),current=state?.grants.find(g=>g.grantId===grantId&&g.expiresAt>Date.now());
+  if(!state||!current)throw Error('AUTH_INVALID');
+  const at=Date.now();
+  const evidence=readToolNames.includes(name)?{lastSuccessfulReadAt:at}:draftToolNames.includes(name)?{lastSuccessfulDraftAt:at}:null;
+  if(evidence)persist({...state,grants:state.grants.map(g=>g.grantId===grantId?{...g,...evidence}:g)});
+ }
  function probe(){const path=join(stateDir,`.probe-${randomUUID()}`),value=opaque();try{writeFileSync(path,value,{flag:'wx',mode:0o600});if(readFileSync(path,'utf8')!==value)throw Error('STORAGE_INVALID');}finally{if(existsSync(path))unlinkSync(path);}}
  probe();
  const domain=new Domain(join(stateDir,'content.sqlite'),bundle);
@@ -80,7 +90,19 @@ async function main(){
  if(await oauth.route(req,res,origin)){await cleanSessions();return;}
  const path=(req.url||'').split('?')[0];if(req.url?.includes('?'))return json(res,400,{code:'REQUEST_INVALID'});
  if(ownerUiRoute(req,res,path))return;
+ if(path==='/connect'||path==='/connect/app.js'){clientUiRoute(req,res,path);return;}
  if(path==='/api/health'&&req.method==='GET')return json(res,200,{live:true});
+ if(path==='/api/connect'&&req.method==='GET')return json(res,200,{schemaVersion:'foldy-connect.v1',transport:tunnel?'configured-not-verified':'unconfigured',chatgptReady:false,authentication:'oauth-authorization-code-pkce',endpointPath:'/mcp'});
+ if(path==='/api/connect/status'||path==='/api/connect/tunnel'){
+  if(!owner(req))return json(res,401,{code:'AUTH_REQUIRED'});
+  if(req.method!=='GET')return json(res,405,{code:'METHOD_INVALID'});
+  if(path==='/api/connect/tunnel')return json(res,200,{schemaVersion:'foldy-secure-mcp-tunnel-status.v1',state:tunnel?'configured-not-verified':'unconfigured',tunnelId:tunnel?.tunnelId||null,onlineVerified:false});
+  return json(res,200,{schemaVersion:'foldy-connect-status.v1',transport:tunnel?'configured-not-verified':'unconfigured',chatgptReady:false,grants:getState()?.grants.map(g=>grantEvidence(g))||[]});
+ }
+ if(path==='/'){
+  const state=getState()?domain.requiresAccessConfiguration()?'unavailable':(await access.authorize(viewerCookie(req))).allowed?'allowed':'locked':'unavailable';
+  clientUiRoute(req,res,path,state);return;
+ }
  if(path==='/api/owner/access'&&req.method==='GET')return json(res,200,{claimed:!!getState(),passwordConfigured:!!getState()?.ownerPassword});
  if(path==='/api/claim'&&req.method==='POST'){
  if(getState())return json(res,409,{code:'ALREADY_CLAIMED'});
@@ -141,7 +163,7 @@ async function main(){
  }
  if(path.startsWith('/api/mcp-grants')){
  if(!owner(req))return json(res,401,{code:'AUTH_REQUIRED'});
- if(path==='/api/mcp-grants'&&req.method==='GET')return json(res,200,{grants:getState()!.grants.map(g=>({grantId:g.grantId,scopes:g.scopes||['foldy:read'],expiresAt:g.expiresAt,kind:g.grantId.startsWith('oauth:')?'oauth':'opaque',active:g.expiresAt>Date.now()}))});
+ if(path==='/api/mcp-grants'&&req.method==='GET')return json(res,200,{grants:getState()!.grants.map(g=>grantEvidence(g))});
  if(req.method!=='POST')return json(res,405,{code:'METHOD_INVALID'});
  if(path==='/api/mcp-grants'&&domain.requiresAccessConfiguration())return json(res,423,{code:'ACCESS_CONFIGURATION_REQUIRED'});
  if(!req.headers['content-type']?.startsWith('application/json'))return json(res,403,{code:'ORIGIN_INVALID'});
@@ -179,6 +201,7 @@ if(path==='/api/operations'){
  return json(res,200,domain.dispatch(input.name,input.arguments,{id:'owner',owner:true,scopes:[]}));
  }
  if(path==='/mcp/manifest.json'&&req.method==='GET'){
+ if(!owner(req))return json(res,401,{code:'AUTH_REQUIRED'});
  const toolSchemas=domain.tools({id:'discovery',owner:false,scopes:['foldy:read','foldy:draft:write']});
  return json(res,200,{schemaVersion:'foldy-mcp-manifest.v1',toolContractVersion,instanceId:identity.instanceId,projectId:identity.projectId,workbookId:identity.workbookId,currentPublishedRevisionId:domain.current(),serverName:'foldy-runtime',serverVersion:'0.1.0',endpoint:'/mcp',transport:dev?'HTTP loopback development only':'HTTPS Streamable HTTP',supportedProtocolVersions:[...SUPPORTED_PROTOCOL_VERSIONS],authenticationDiscovery:{mode:'oauth-authorization-code-pkce',oauth:true,protectedResourceMetadata:'/.well-known/oauth-protected-resource/mcp',authorizationServerMetadata:'/.well-known/oauth-authorization-server',fallback:'owner-issued-opaque-token'},capabilities:{tools:toolSchemas.map(t=>t.name),toolSchemas,readTools:readToolNames,draftTools:draftToolNames,scopes:['foldy:read','foldy:draft:write']},browserAccess:await access.status()});
  }
@@ -201,7 +224,7 @@ if(path==='/api/operations'){
  const server=new Server({name:'foldy-runtime',version:'0.1.0'},{capabilities:{tools:{}}});
  const actor={id:grant.grantId,owner:false,scopes:grant.scopes||['foldy:read']};
  server.setRequestHandler(ListToolsRequestSchema,async()=>{if(!grantCurrent())throw Error('AUTH_INVALID');return {tools:domain.tools(actor)};});
- server.setRequestHandler(CallToolRequestSchema,async request=>{if(!grantCurrent())throw Error('AUTH_INVALID');return {content:[{type:'text' as const,text:JSON.stringify(domain.dispatch(request.params.name,request.params.arguments||{},actor))}]};});
+ server.setRequestHandler(CallToolRequestSchema,async request=>{if(!grantCurrent())throw Error('AUTH_INVALID');const result=domain.dispatch(request.params.name,request.params.arguments||{},actor);if(!result?.code)recordToolSuccess(grant.grantId,request.params.name);return {content:[{type:'text' as const,text:JSON.stringify(result)}]};});
  const transport:StreamableHTTPServerTransport=new StreamableHTTPServerTransport({sessionIdGenerator:()=>randomUUID(),enableJsonResponse:true,onsessioninitialized:id=>{if(grantCurrent())sessions.set(id,{transport,server,grantId:grant.grantId,expiresAt:Math.min(grant.expiresAt,Date.now()+3600000)});},onsessionclosed:id=>{sessions.delete(id);}});
  await server.connect(transport);
  return await transport.handleRequest(req,res,input);
@@ -213,7 +236,11 @@ if(path==='/api/operations'){
  if(domain.requiresAccessConfiguration())return json(res,423,{code:'ACCESS_CONFIGURATION_REQUIRED'});
  // No await/stream boundary after this decision: enqueue the verified bytes synchronously.
  if(!(await access.authorize(viewerCookie(req))).allowed)return json(res,401,{code:'ACCESS_REQUIRED'});
- const name=path==='/'?'index.html':decodeURIComponent(path.slice(1));if(!safePath(name))return json(res,400,{code:'PATH_INVALID'});const file=domain.file(name);if(!file)return json(res,404,{code:'NOT_FOUND'});
+ const documentRoute=path.startsWith('/_document/');
+ let name:string;try{name=decodeURIComponent(documentRoute?path.slice('/_document/'.length):path.slice(1));}catch{return json(res,400,{code:'PATH_INVALID'});}
+ if(documentRoute&&!name)name='index.html';
+ if(!safePath(name))return json(res,400,{code:'PATH_INVALID'});const file=domain.file(name);if(!file)return json(res,404,{code:'NOT_FOUND'});
+ if(documentRoute&&file.mediaType==='text/html')res.setHeader('content-security-policy',"default-src 'none'; style-src 'self' 'unsafe-inline'; img-src 'self'; font-src 'self'; sandbox; base-uri 'none'; form-action 'none'; frame-ancestors 'self'");
  res.writeHead(200,{'content-type':file.mediaType,'content-length':file.bytes.length});res.end(req.method==='HEAD'?undefined:file.bytes);
  }catch(error){const code=error instanceof Error&&/^[A-Z_]+$/.test(error.message)?error.message:'REQUEST_FAILED';if(owner(req)){try{operations.failure(requestId,'owner-request');}catch{ /* Never reveal storage errors or claim durable evidence on failure. */ }}if(!res.headersSent)json(res,400,{code,requestId});else res.end();}
  };

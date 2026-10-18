@@ -6,16 +6,17 @@ import { spawn, execFileSync } from 'node:child_process';
 import { createServer } from 'node:net';
 import { once } from 'node:events';
 const hash = (v: string) => createHash('sha256').update(v).digest('hex');
-export async function startFoldy(backup?: string, preservedCopy=false) {
+export async function startFoldy(backup?: string, preservedCopy=false, documentAssets=false) {
  const root = mkdtempSync(join(tmpdir(), 'foldy-browser-'));
  let bundle = join(root, 'bundle'); mkdirSync(bundle);
  if (backup === undefined) mkdirSync(join(root, 'state'),{mode:0o700});
- const html = '<!doctype html><h1>Immutable Foldy</h1>';
- writeFileSync(join(bundle, 'index.html'), html);
- let raw = JSON.stringify({schemaVersion:'foldy-release-bundle.v1',instanceId:'instance-1',projectId:'project-1',workbookId:'workbook-1',revisionId:'revision-1',runtimeImageDigest:`sha256:${'a'.repeat(64)}`,members:[{path:'index.html',mediaType:'text/html',bytes:Buffer.byteLength(html),sha256:hash(html),executableMode:0}]});
+ const html = documentAssets ? '<!doctype html><link rel="stylesheet" href="theme.css"><h1>Immutable Foldy</h1><a href="nested/page.html">Next page</a>' : '<!doctype html><h1>Immutable Foldy</h1>';
+ const documents:Record<string,string>={'index.html':html,...(documentAssets?{'theme.css':'h1{color:rgb(12,34,56)}','nested/page.html':'<!doctype html><link rel="stylesheet" href="../theme.css"><h1>Nested page</h1><a href="../index.html">Back</a>'}:{})};
+ const members=Object.entries(documents).map(([path,content])=>{mkdirSync(join(bundle,path,'..'),{recursive:true});writeFileSync(join(bundle,path),content);return {path,mediaType:path.endsWith('.css')?'text/css':'text/html',bytes:Buffer.byteLength(content),sha256:hash(content),executableMode:0};});
+ let raw = JSON.stringify({schemaVersion:'foldy-release-bundle.v1',instanceId:'instance-1',projectId:'project-1',workbookId:'workbook-1',revisionId:'revision-1',runtimeImageDigest:`sha256:${'a'.repeat(64)}`,members});
  writeFileSync(join(bundle, 'manifest.json'), raw);
  if(preservedCopy){
-  if(backup!==undefined)throw Error('Unsupported combined fixture');
+  if(backup!==undefined||documentAssets)throw Error('Unsupported combined fixture');
   const source=join(root,'reviewed-source');mkdirSync(source);writeFileSync(join(source,'index.html'),html);
   const {schemaVersion,...revision}=JSON.parse(raw);
   const plan=join(root,'migration-plan.json');writeFileSync(plan,JSON.stringify({schemaVersion:'foldy-preserved-copy-plan.v1',sourceProjectUrl:'https://original.example/projects/project-1',provenance:'Synthetic owner-reviewed immutable export for browser regression only',revision:{...revision,approvedRevisionId:'revision-1',frozen:true,runtimeVersion:'0.1.0'}}));

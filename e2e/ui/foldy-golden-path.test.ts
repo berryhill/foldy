@@ -64,10 +64,10 @@ test('generic MCP proposals survive browser publication, backup and fresh offlin
   const readGrant=await grant(owner.request,first.url,['foldy:read']);const readClient=await connect(clientRequest,first.url,readGrant.token);expect(readClient.tools).not.toContain('create_update');
   const draftGrant=await grant(owner.request,first.url,['foldy:read','foldy:draft:write']);const client=await connect(clientRequest,first.url,draftGrant.token);expect(client.tools).toContain('create_update');
   const one=await propose(client,'First MCP proposal','First owner publication');
-  await reader.goto(first.url);await expect(reader.getByRole('heading',{name:'Immutable Foldy'})).toBeVisible();
+  await reader.goto(first.url);await expect(reader.frameLocator('iframe[title="Published Foldy"]').getByRole('heading',{name:'Immutable Foldy'})).toBeVisible();
   await publish(page,first.url,'First MCP proposal','Immutable Foldy','First owner publication');
   expect((await client.call('get_project')).observedRevisionId).toBe(one.expectedUpdateRevisionId);
-  await reader.reload();await expect(reader.getByRole('heading',{name:'First owner publication'})).toBeVisible();
+  await reader.reload();await expect(reader.frameLocator('iframe[title="Published Foldy"]').getByRole('heading',{name:'First owner publication'})).toBeVisible();
   await page.getByRole('button',{name:'All updates',exact:true}).click();
   const downloading=page.waitForEvent('download');await page.getByRole('button',{name:'Download backup',exact:true}).click();
   const path=await(await downloading).path();expect(path).not.toBeNull();const backup=readFileSync(path!,'utf8');
@@ -80,14 +80,14 @@ test('generic MCP proposals survive browser publication, backup and fresh offlin
   expect((await(await restoredOwner.request.get(second.url+'/api/mcp-grants')).json()).grants).toEqual([]);
   for(const token of [readGrant.token,draftGrant.token])expect((await clientRequest.post(second.url+'/mcp',{headers:{authorization:`Bearer ${token}`,accept:'application/json, text/event-stream'},data:{jsonrpc:'2.0',id:1,method:'initialize',params:{protocolVersion:'2025-03-26',capabilities:{},clientInfo:{name:'old-client',version:'1'}}}})).status()).toBe(401);
   await recovered.getByRole('button',{name:'Enable public reading',exact:true}).click();await expect(recovered.getByRole('heading',{name:'Review what’s next'})).toBeVisible();
-  await reader.goto(second.url);await expect(reader.getByRole('heading',{name:'First owner publication'})).toBeVisible();
+  await reader.goto(second.url);await expect(reader.frameLocator('iframe[title="Published Foldy"]').getByRole('heading',{name:'First owner publication'})).toBeVisible();
   const newGrant=await grant(restoredOwner.request,second.url,['foldy:read','foldy:draft:write']);const newClient=await connect(clientRequest,second.url,newGrant.token);
   expect((await newClient.call('get_project')).observedRevisionId).toBe(one.expectedUpdateRevisionId);
   expect((await newClient.call('get_update',{updateId:one.updateId})).value.state).toBe('Published');
   const two=await propose(newClient,'Second MCP proposal','Second owner publication');
-  await reader.reload();await expect(reader.getByRole('heading',{name:'First owner publication'})).toBeVisible();
+  await reader.reload();await expect(reader.frameLocator('iframe[title="Published Foldy"]').getByRole('heading',{name:'First owner publication'})).toBeVisible();
   await publish(recovered,second.url,'Second MCP proposal','First owner publication','Second owner publication');
   expect((await newClient.call('get_project')).observedRevisionId).toBe(two.expectedUpdateRevisionId);
-  await reader.reload();await expect(reader.getByRole('heading',{name:'Second owner publication'})).toBeVisible();expect(errors).toEqual([]);
+  await reader.reload();await expect(reader.frameLocator('iframe[title="Published Foldy"]').getByRole('heading',{name:'Second owner publication'})).toBeVisible();expect(errors).toEqual([]);
  }finally{await clientRequest.dispose();await owner.close();await restoredOwner.close();await viewer.close();await first.close();await second?.close();}
 });

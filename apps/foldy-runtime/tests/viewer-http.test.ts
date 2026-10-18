@@ -41,14 +41,23 @@ test('viewer HTTP lifecycle, all bytes gated, origin/schema and authority separa
  assert.equal((await configure({mode:'password_required',password},{...owner,origin:'https://evil.invalid'})).status,403);
  assert.equal((await configure({mode:'password_required',password,extra:true})).status,400);
  assert.equal((await configure({mode:'password_required',password})).status,200);
- const routes=['/','/index.html','/style.css','/data.json','/print.html','/exports/unknown','/unknown'];
+ const lockedRoot=await fetch(u+'/');assert.equal(lockedRoot.status,401);
+ const lockedHtml=await lockedRoot.text();assert.match(lockedHtml,/Connect ChatGPT/);assert.match(lockedHtml,/Unlock this Foldy/);assert.ok(!lockedHtml.includes('Immutable Foldy'));
+ const routes=['/','/_document/index.html','/_document/print.html','/_document/style.css','/index.html','/style.css','/data.json','/print.html','/exports/unknown','/unknown'];
  for(const path of routes) for(const method of ['GET','HEAD']){const r=await fetch(u+path,{method,headers:owner});assert.equal(r.status,401);assert.equal(r.headers.get('cache-control'),'no-store');assert.ok(!(await r.text()).includes('Immutable Foldy'));}
  const unlock=()=>request('/api/viewer/unlock',{password});
  assert.equal((await request('/api/viewer/unlock',{password},{})).status,403);
  assert.equal((await request('/api/viewer/unlock',{password:'x'.repeat(5000)})).status,400);
  const unlocked=await unlock();assert.equal(unlocked.status,200);const setCookie=unlocked.headers.get('set-cookie')!;for(const flag of ['Secure','HttpOnly','SameSite=Strict','Path=/'])assert.ok(setCookie.includes(flag));
  const viewer={cookie:setCookie.split(';')[0],origin:u};assert.deepEqual(await unlocked.json(),{unlocked:true,role:'VIEWER'});
- assert.match(await (await fetch(u+'/',{headers:viewer})).text(),/Immutable Foldy/);
+ assert.match(await (await fetch(u+'/',{headers:viewer})).text(),/src="\/_document\/index.html" sandbox=""/);
+ const document=await fetch(u+'/_document/index.html',{headers:viewer});
+ assert.match(document.headers.get('content-security-policy')!,/sandbox;.*frame-ancestors 'self'/);
+ assert.equal(await document.text(),'<!doctype html><h1>Immutable Foldy</h1>');
+ const sibling=await fetch(u+'/_document/print.html',{headers:viewer});assert.equal(await sibling.text(),'<p>Private print</p>');
+ assert.match(sibling.headers.get('content-security-policy')!,/frame-ancestors 'self'/);
+ const asset=await fetch(u+'/_document/style.css',{headers:viewer});assert.equal(await asset.text(),'body{color:red}');
+ assert.match(asset.headers.get('content-security-policy')!,/frame-ancestors 'none'/);
  for(const [path] of members)assert.equal((await fetch(u+'/'+path,{headers:viewer})).status,200);
  assert.equal((await configure({mode:'public',confirmDisable:true},viewer)).status,401);
  assert.equal((await request('/api/operations',{name:'get_file',arguments:{path:'index.html'}},viewer)).status,401);

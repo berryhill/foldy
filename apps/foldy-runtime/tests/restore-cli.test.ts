@@ -56,7 +56,8 @@ test('fresh restore, durable replay denial, startup claim and explicit policy be
  assert.equal((await post('/api/mcp-grants',{},cookie)).status,423);
  assert.equal((await post('/api/owner/viewer-access',{mode:'public',confirmDisable:true},cookie)).status,200);
  assert.equal((await post('/api/mcp-grants',{},cookie)).status,201);
- assert.equal(await (await fetch(url+'/')).text(),f.html);
+ assert.match(await (await fetch(url+'/')).text(),/src="\/_document\/index.html" sandbox=""/);
+ assert.equal(await (await fetch(url+'/_document/index.html')).text(),f.html);
  exit=once(child!,'exit');child!.kill();await exit;child=undefined;
  const d=new Domain(join(f.target,'content.sqlite'),loadBundle(f.bundle,f.hash));try{assert.equal(d.requiresAccessConfiguration(),false);}finally{d.close();}
  }finally{if(child&&child.exitCode===null){const exit=once(child,'exit');child.kill();await exit;}rmSync(f.root,{recursive:true,force:true});}

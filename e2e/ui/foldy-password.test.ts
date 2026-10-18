@@ -28,7 +28,7 @@ test('password rotation denies prior viewer grant and old password without grant
     await prior.goto(runtime.url + '/unlock');
     await prior.getByLabel('Viewing password', { exact: true }).fill(first);
     await prior.getByRole('button', { name: 'Unlock', exact: true }).click();
-    await expect(prior.getByRole('heading', { name: 'Immutable Foldy' })).toBeVisible();
+    await expect(prior.frameLocator('iframe[title="Published Foldy"]').getByRole('heading', { name: 'Immutable Foldy' })).toBeVisible();
     await configure(replacement);
     expect((await oldVisitor.request.get(runtime.url + '/')).status()).toBe(401);
     await prior.goto(runtime.url + '/unlock');
@@ -39,7 +39,7 @@ test('password rotation denies prior viewer grant and old password without grant
     await expect(reader.getByRole('status')).toContainText('not accepted');
     await reader.getByLabel('Viewing password', { exact: true }).fill(replacement);
     await reader.getByRole('button', { name: 'Unlock', exact: true }).click();
-    await expect(reader.getByRole('heading', { name: 'Immutable Foldy' })).toBeVisible();
+    await expect(reader.frameLocator('iframe[title="Published Foldy"]').getByRole('heading', { name: 'Immutable Foldy' })).toBeVisible();
     expect((await viewer.request.post(runtime.url + '/api/operations', { headers: { origin: runtime.url }, data: { name: 'list_updates', arguments: {} } })).status()).toBe(401);
     await page.getByRole('button', { name: 'Allow public reading' }).click();
     await expect(page.getByRole('status')).toContainText('Public reading is enabled.');

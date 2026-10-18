@@ -68,7 +68,8 @@ test('real process OAuth consent/PKCE, resource binding, safe MCP read, revocati
   const custody=readFileSync(join(state,'authority.json'),'utf8');assert.ok(!custody.includes(token.access_token));assert.ok(!custody.includes(code));assert.equal(statSync(join(state,'authority.json')).mode&0o077,0);
   const auth={authorization:`Bearer ${token.access_token}`,accept:'application/json, text/event-stream'};
   const negotiatedSessions: Record<string,string>[] = [];
-  const mcpManifest=await (await fetch(origin+'/mcp/manifest.json')).json();
+  assert.equal((await fetch(origin+'/mcp/manifest.json')).status,401);
+  const mcpManifest=await (await fetch(origin+'/mcp/manifest.json',{headers:owner})).json();
   assert.deepEqual(mcpManifest.supportedProtocolVersions,SUPPORTED_PROTOCOL_VERSIONS);
   for(const offered of ['2025-11-25','2025-03-26','2099-01-01']) {
     const request={jsonrpc:'2.0',id:10,method:'initialize',params:{protocolVersion:offered,capabilities:{},clientInfo:{name:'negotiation-proof',version:'1'}}};

@@ -48,7 +48,8 @@ test('owner-only preview serves immutable candidate assets without switching the
   assert.match(entry.headers.get('content-security-policy')||'',/default-src 'none'/);
   const css=await fetch(u+prefix+'assets/site.css',{headers:owner});assert.equal(css.status,200);assert.equal(await css.text(),'body{color:teal}');
   const head=await fetch(u+prefix,{method:'HEAD',headers:owner});assert.equal(head.status,200);assert.equal(await head.text(),'');assert.equal(head.headers.get('content-length'),String(Buffer.byteLength(html)));
-  assert.match(await (await fetch(u+'/')).text(),/Published seed/);
+  assert.match(await (await fetch(u+'/')).text(),/src="\/_document\/index.html" sandbox=""/);
+  assert.match(await (await fetch(u+'/_document/index.html')).text(),/Published seed/);
   const later=await op('update_page',{...ref,path:'index.html',content:'<!doctype html><h1>Later</h1>',idempotencyKey:'later'});ref.expectedUpdateRevisionId=later.updateRevisionId;
   assert.equal(await (await fetch(u+prefix,{headers:owner})).text(),html);
   assert.equal((await fetch(u+`/_preview/${created.updateId}/${later.updateRevisionId}/`,{headers:owner})).status,200);

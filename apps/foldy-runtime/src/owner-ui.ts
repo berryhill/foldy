@@ -74,6 +74,7 @@ async function ownerStatus(){
 async function connectAssistants(){
  const [m,list]=await Promise.all([api('/mcp/manifest.json'),api('/api/mcp-grants')]);
  const section=el('section');el('h2','Connect assistants',section);
+ const guided=el('a','Open guided ChatGPT connection',section);guided.href='/connect';el('p','Use the guided connection for availability, OAuth, read verification and activity. Advanced grants remain available below.',section);
  const endpoint=new URL(m.endpoint,location.origin),discovery=new URL(m.authenticationDiscovery.protectedResourceMetadata,location.origin);
  if(endpoint.origin!==location.origin||discovery.origin!==location.origin)throw Error('REQUEST_FAILED');
  const chat=el('details',undefined,section);chat.id='connect-chatgpt';
