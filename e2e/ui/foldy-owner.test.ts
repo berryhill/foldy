@@ -3,6 +3,15 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { writeFileSync, readFileSync } from 'node:fs';
 import { startFoldy } from '../lib/playwright/foldy-runtime.js';
 
+async function tabToLabel(page:Page,label:string){
+ const input=page.getByLabel(label,{exact:true});
+ for(let tabs=0;tabs<8;tabs++){
+  if(await input.evaluate(element=>element===document.activeElement))break;
+  await page.keyboard.press('Tab');
+ }
+ await expect(input).toBeFocused();
+}
+
 test('preserved copy requires explicit access and renders unchanged content with ChatGPT guidance at both widths',async({browser},info)=>{
  const runtime=await startFoldy(undefined,true),context=await browser.newContext({ignoreHTTPSErrors:true}),page=await context.newPage();
  const errors:string[]=[];page.on('pageerror',e=>errors.push(e.message));page.on('dialog',d=>d.accept());const viewing=randomBytes(24).toString('hex');
@@ -106,7 +115,7 @@ test('standalone owner keyboard claim, review, publication and reader separation
  try {
   await page.goto(runtime.url+'/owner'); await expect(page.getByRole('heading',{name:'Claim your Foldy'})).toBeVisible();
   // No traces/videos: generated one-use assertion never enters retained artifacts.
-  await page.keyboard.press('Tab'); await page.keyboard.press('Tab');
+  await tabToLabel(page,'One-use owner key');
   await expect(page.getByLabel('One-use owner key')).toBeFocused();
   expect(await page.getByLabel('One-use owner key').evaluate(e=>getComputedStyle(e).outlineStyle)).not.toBe('none');
   await snapshot(page,'claim-desktop');
@@ -181,9 +190,12 @@ test('standalone owner keyboard claim, review, publication and reader separation
   expect((await post('get_update',{updateId:created.updateId})).value.state).toBe('Published');
   await reader.goto(runtime.url); await expect(reader.frameLocator('iframe[title="Published Foldy"]').getByRole('heading',{name:'Published welcome'})).toBeVisible();
   expect(await (await viewer.request.get(runtime.url+'/_document/index.html')).body()).toEqual(candidateBytes);
-  await page.getByRole('button',{name:'All updates'}).click();
+  await page.bringToFront();await page.getByRole('button',{name:'All updates'}).focus();await page.keyboard.press('Enter');
+  await expect(page.getByRole('button',{name:'Download backup',exact:true})).toBeEnabled();
   const downloadEvent=page.waitForEvent('download');
+  const backupResponse=page.waitForResponse(r=>new URL(r.url()).pathname==='/api/backup',{timeout:10000});
   await page.getByRole('button',{name:'Download backup',exact:true}).click();
+  expect((await backupResponse).status()).toBe(200);
   const download=await downloadEvent;
   const backupPath=await download.path();expect(backupPath).not.toBeNull();
   expect(JSON.parse(readFileSync(backupPath!,'utf8'))).toBeTruthy();
@@ -197,7 +209,7 @@ test('standalone owner keyboard claim, review, publication and reader separation
   expect((await viewer.request.get(runtime.url)).status()).toBe(401);
   await reader.setViewportSize({width:390,height:844}); await reader.goto(runtime.url+'/unlock');
   await expect(reader.getByLabel('Viewing password',{exact:true})).toBeVisible();
-  await reader.keyboard.press('Tab');await reader.keyboard.press('Tab');await expect(reader.getByLabel('Viewing password',{exact:true})).toBeFocused();
+  await tabToLabel(reader,'Viewing password');
   await snapshot(reader,'unlock-mobile');
   await reader.keyboard.insertText(password);
   const unlocked=reader.waitForResponse(r=>new URL(r.url()).pathname==='/api/viewer/unlock'&&r.request().method()==='POST');

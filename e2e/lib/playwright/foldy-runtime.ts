@@ -38,16 +38,21 @@ export async function startFoldy(backup?: string, preservedCopy=false, documentA
  writeFileSync(join(root,'bootstrap.json'), JSON.stringify({instanceId:'instance-1',verifier:hash(assertion),expiresAt:Date.now()+600000}),{mode:0o600});
  const reserve=createServer();reserve.listen(0,'127.0.0.1');await once(reserve,'listening');const address=reserve.address();if(!address||typeof address==='string')throw Error('Port unavailable');const port=address.port;await new Promise<void>(r=>reserve.close(()=>r()));
  execFileSync('openssl',['req','-x509','-newkey','rsa:2048','-nodes','-keyout',join(root,'key.pem'),'-out',join(root,'cert.pem'),'-days','1','-subj','/CN=127.0.0.1'],{stdio:'ignore'});
- const child = spawn(process.execPath,[resolve('../apps/foldy-runtime/dist/main.js')],{env:{...process.env,FOLDY_BUNDLE_DIR:bundle,FOLDY_BUNDLE_DIGEST:hash(raw),FOLDY_STATE_DIR:join(root,'state'),FOLDY_BOOTSTRAP_FILE:join(root,'bootstrap.json'),FOLDY_DEV_LOOPBACK:'0',FOLDY_PUBLIC_HOST:`127.0.0.1:${port}`,FOLDY_TLS_KEY_FILE:join(root,'key.pem'),FOLDY_TLS_CERT_FILE:join(root,'cert.pem'),FOLDY_PORT:String(port),FOLDY_EXTERNAL_CACHE_ENABLED:'0'},stdio:['ignore','pipe','pipe']});
- let logs=''; child.stderr.on('data',c=>{logs+=c;});
- const close = async (preserve = false) => { if(child.exitCode===null){const exited=once(child,'exit');child.kill();await exited;} if(!preserve)rmSync(root,{recursive:true,force:true}); };
- try {
- const port = await new Promise<string>((resolvePort,reject)=>{
+ const env={...process.env,FOLDY_BUNDLE_DIR:bundle,FOLDY_BUNDLE_DIGEST:hash(raw),FOLDY_STATE_DIR:join(root,'state'),FOLDY_BOOTSTRAP_FILE:join(root,'bootstrap.json'),FOLDY_OWNER_RECOVERY_FILE:join(root,'recovery.json'),FOLDY_DEV_LOOPBACK:'0',FOLDY_PUBLIC_HOST:`127.0.0.1:${port}`,FOLDY_TLS_KEY_FILE:join(root,'key.pem'),FOLDY_TLS_CERT_FILE:join(root,'cert.pem'),FOLDY_PORT:String(port),FOLDY_EXTERNAL_CACHE_ENABLED:'0'};
+ let logs='';
+ const launch=()=>{logs='';const spawned=spawn(process.execPath,[resolve('../apps/foldy-runtime/dist/main.js')],{env,stdio:['ignore','pipe','pipe']});spawned.stderr.on('data',c=>{logs+=c;});return spawned;};
+ let child=launch();
+ const stop=async()=>{if(child.exitCode===null){const exited=once(child,'exit');child.kill();await exited;}};
+ const close = async (preserve = false) => {await stop();if(!preserve)rmSync(root,{recursive:true,force:true});};
+ const ready=()=>new Promise<string>((resolvePort,reject)=>{
   const timeout=setTimeout(()=>reject(Error('Runtime readiness deadline')),10000);
   child.once('exit',()=>{clearTimeout(timeout);reject(Error('Runtime exited before readiness'));});
   child.once('error',reject);
   child.stdout.on('data',c=>{logs+=c;const match=logs.match(/FOLDY_LISTENING (\d+)/);if(match?.[1]){clearTimeout(timeout);resolvePort(match[1]);}});
  });
- return {url:`https://127.0.0.1:${port}`,assertion,root,close};
+ try {
+ const readyPort=await ready();
+ const restart=async()=>{await stop();child=launch();if(await ready()!==readyPort)throw Error('Fixture port changed after restart');};
+ return {url:`https://127.0.0.1:${readyPort}`,assertion,root,bundle,bundleDigest:hash(raw),stop,restart,close};
  } catch(error) {await close();throw error;}
 }

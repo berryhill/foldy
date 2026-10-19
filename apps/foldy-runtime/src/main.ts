@@ -16,7 +16,7 @@ import { McpOAuth } from './mcp-oauth.js';
 import { ViewerAccess } from './viewer-access.js';
 import { sourceLimiter, viewerCookie, viewerRoute } from './viewer-http.js';
 import { ingressConfig, requestOrigin } from './ingress.js';
-import { grantEvidence, tunnelBinding } from './connect.js';
+import { grantEvidence, tunnelBinding, transportStatus } from './connect.js';
 import { clientUiRoute } from './client-ui.js';
 const required=(name:string)=>{const v=process.env[name];if(!v)throw Error('CONFIG_REQUIRED');return v;};
 const opaque=()=>randomBytes(32).toString('base64url');
@@ -78,6 +78,15 @@ async function main(){
  // Bound distinct guesses by transport peer, never a forwarded header. Owner
  // grant revocation remains independent of this login budget.
  const ownerAttemptKey=randomBytes(32),allowOwnerAttempt=sourceLimiter(Date.now,1024,5,true),allowOwnerSource=sourceLimiter(Date.now,1024,8);
+ // Bound protected-key attempts by socket source and across the instance before
+ // touching a recovery file or starting an expensive password derivation.
+ const allowSetupSource=sourceLimiter(Date.now,1024,12),allowSetupGlobal=sourceLimiter(Date.now,1,96);
+ async function setupAllowed(req:IncomingMessage){
+  if(!req.socket.remoteAddress)return false;
+  const global=await allowSetupGlobal('owner-setup');
+  const local=await allowSetupSource(req.socket.remoteAddress);
+  return global&&local;
+ }
  const handler=async(req:IncomingMessage,res:ServerResponse)=>{
  const requestId=randomUUID();res.setHeader('x-request-id',requestId);
  try{
@@ -92,12 +101,13 @@ async function main(){
  if(ownerUiRoute(req,res,path))return;
  if(path==='/connect'||path==='/connect/app.js'){clientUiRoute(req,res,path);return;}
  if(path==='/api/health'&&req.method==='GET')return json(res,200,{live:true});
- if(path==='/api/connect'&&req.method==='GET')return json(res,200,{schemaVersion:'foldy-connect.v1',transport:tunnel?'configured-not-verified':'unconfigured',chatgptReady:false,authentication:'oauth-authorization-code-pkce',endpointPath:'/mcp'});
+ if(path==='/api/connect'&&req.method==='GET')return json(res,200,{schemaVersion:'foldy-connect.v1',transport:transportStatus(tunnel).state,chatgptReady:false,authentication:'oauth-authorization-code-pkce',endpointPath:'/mcp'});
  if(path==='/api/connect/status'||path==='/api/connect/tunnel'){
   if(!owner(req))return json(res,401,{code:'AUTH_REQUIRED'});
   if(req.method!=='GET')return json(res,405,{code:'METHOD_INVALID'});
-  if(path==='/api/connect/tunnel')return json(res,200,{schemaVersion:'foldy-secure-mcp-tunnel-status.v1',state:tunnel?'configured-not-verified':'unconfigured',tunnelId:tunnel?.tunnelId||null,onlineVerified:false});
-  return json(res,200,{schemaVersion:'foldy-connect-status.v1',transport:tunnel?'configured-not-verified':'unconfigured',chatgptReady:false,grants:getState()?.grants.map(g=>grantEvidence(g))||[]});
+  const transport=transportStatus(tunnel);
+  if(path==='/api/connect/tunnel')return json(res,200,{schemaVersion:'foldy-secure-mcp-tunnel-status.v1',state:transport.state,tunnelId:tunnel?.tunnelId||null,onlineVerified:transport.state==='ready-poll-confirmed',observedAt:transport.observedAt,errorCode:transport.errorCode});
+  return json(res,200,{schemaVersion:'foldy-connect-status.v1',transport:transport.state,observedAt:transport.observedAt,errorCode:transport.errorCode,chatgptReady:false,grants:getState()?.grants.map(g=>grantEvidence(g))||[]});
  }
  if(path==='/'){
   const state=getState()?domain.requiresAccessConfiguration()?'unavailable':(await access.authorize(viewerCookie(req))).allowed?'allowed':'locked':'unavailable';
@@ -106,6 +116,7 @@ async function main(){
  if(path==='/api/owner/access'&&req.method==='GET')return json(res,200,{claimed:!!getState(),passwordConfigured:!!getState()?.ownerPassword});
  if(path==='/api/claim'&&req.method==='POST'){
  if(getState())return json(res,409,{code:'ALREADY_CLAIMED'});
+ if(!await setupAllowed(req))return json(res,429,{code:'RATE_LIMITED'});
  if((req.headers.origin&&req.headers.origin!==origin)||!req.headers['content-type']?.startsWith('application/json')||(req.headers['sec-fetch-site']&&req.headers['sec-fetch-site']!=='same-origin'))return json(res,403,{code:'ORIGIN_INVALID'});
  let token:string;try{token=await authority.claimWithPassword(await body(req,4096));}catch{return json(res,401,{code:'AUTH_INVALID'});}
  res.setHeader('set-cookie',`__Host-foldy-owner=${token}; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=43200`);return json(res,200,{state:domain.requiresAccessConfiguration()?'ACCESS_CONFIGURATION_REQUIRED':'READY'});
@@ -133,7 +144,8 @@ async function main(){
  if(path==='/api/owner/recover'||path==='/api/owner/logout'){
  if(req.method!=='POST')return json(res,405,{code:'METHOD_INVALID'});
  if(req.headers.origin!==origin||!req.headers['content-type']?.startsWith('application/json'))return json(res,403,{code:'ORIGIN_INVALID'});
- const input=await body(req);
+ if(path==='/api/owner/recover'&&!await setupAllowed(req))return json(res,429,{code:'RATE_LIMITED'});
+ const input=await body(req,4096);
  if(path==='/api/owner/logout'){
  if(!owner(req))return json(res,401,{code:'AUTH_REQUIRED'});
  if(!input||typeof input!=='object'||Array.isArray(input)||Object.keys(input).length)return json(res,400,{code:'REQUEST_INVALID'});
