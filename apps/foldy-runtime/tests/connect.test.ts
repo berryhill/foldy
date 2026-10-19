@@ -54,7 +54,7 @@ test('configured tunnel is owner-only and never reported independently online',a
   const claim=await post(origin,'/api/claim',{assertion:f.assertion,password:randomBytes(24).toString('hex')});
   assert.equal(claim.status,200);
   const owner={cookie:claim.headers.get('set-cookie')!.split(';')[0],origin};
-  assert.deepEqual(await (await fetch(origin+'/api/connect/tunnel',{headers:owner})).json(),{schemaVersion:'foldy-secure-mcp-tunnel-status.v1',state:'configured-not-verified',tunnelId,onlineVerified:false});
+  assert.deepEqual(await (await fetch(origin+'/api/connect/tunnel',{headers:owner})).json(),{schemaVersion:'foldy-secure-mcp-tunnel-status.v1',state:'configured-not-verified',tunnelId,onlineVerified:false,observedAt:null,errorCode:'TRANSPORT_UNVERIFIED'});
  }finally{if(runtime)await stop(runtime.child);rmSync(f.root,{recursive:true,force:true});}
 });
 
@@ -63,10 +63,18 @@ test('unconfigured public discovery remains generic; owner evidence follows actu
  try {
   runtime=await launch(f.env);let {origin}=runtime;
   const page=await fetch(origin+'/connect');assert.equal(page.status,200);const pageText=await page.text();
+  assert.match(pageText,/href="https:\/\/chatgpt\.com\/plugins"/);
+  assert.match(pageText,/href="https:\/\/developers\.openai\.com\/api\/docs\/guides\/secure-mcp-tunnels"/);
+  assert.match(pageText,/Already an owner/);
+  assert.match(pageText,/href="\/owner\/setup"/);
+  assert.match(pageText,/separately delivered one-use key/);
+  assert.ok(!pageText.includes('tunnel_0123456789abcdef0123456789abcdef'));
   for(const label of ['Connect ChatGPT','Updates / Review','Connection Tunnel','Authorize','Verify','Iterate','Manage','Sign in to authorize'])assert.ok(pageText.includes(label),label);
   for(const forbidden of ['instance-connect','project-connect','workbook-connect',f.assertion,'/_document/index.html'])assert.ok(!pageText.includes(forbidden),forbidden);
   assert.match(page.headers.get('content-security-policy')!,/script-src 'nonce-/);
   const client=await fetch(origin+'/connect/app.js');assert.equal(client.status,200);const clientSource=await client.text();new Function(clientSource);
+  assert.match(clientSource,/Copy invitation setup URL/);
+  assert.match(clientSource,/new URL\('\/owner\/setup',location\.origin\)\.href/);
   assert.ok(!clientSource.includes('innerHTML')&&!clientSource.includes('localStorage'));
   assert.match(clientSource,/clearPrivate\(\)/);assert.match(clientSource,/\/api\/connect\/status/);
   assert.equal((await fetch(origin+'/mcp/manifest.json')).status,423);
@@ -78,7 +86,7 @@ test('unconfigured public discovery remains generic; owner evidence follows actu
   const owner={cookie:claim.headers.get('set-cookie')!.split(';')[0],origin};
   assert.equal((await fetch(origin+'/mcp/manifest.json')).status,401);
   const manifest=await fetch(origin+'/mcp/manifest.json',{headers:owner});assert.equal(manifest.status,200);assert.equal((await manifest.json()).projectId,'project-connect');
-  const tunnel=await (await fetch(origin+'/api/connect/tunnel',{headers:owner})).json();assert.deepEqual(tunnel,{schemaVersion:'foldy-secure-mcp-tunnel-status.v1',state:'unconfigured',tunnelId:null,onlineVerified:false});
+  const tunnel=await (await fetch(origin+'/api/connect/tunnel',{headers:owner})).json();assert.deepEqual(tunnel,{schemaVersion:'foldy-secure-mcp-tunnel-status.v1',state:'unconfigured',tunnelId:null,onlineVerified:false,observedAt:null,errorCode:null});
   const grant=await (await post(origin,'/api/mcp-grants',{scopes:['foldy:read','foldy:draft:write']},owner)).json();
   const readOnly=await (await post(origin,'/api/mcp-grants',{},owner)).json();
   const status=()=>fetch(origin+'/api/connect/status',{headers:owner}).then(r=>r.json());

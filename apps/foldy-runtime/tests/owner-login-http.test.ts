@@ -80,3 +80,30 @@ test('distinct guesses exhaust a source budget without blocking owner revocation
   assert.equal((await fetch(u+'/mcp',{headers:{authorization:'Bearer '+grant.token}})).status,401);
  }finally{if(p){const exited=once(p.child,'exit');p.child.kill();await exited;}rmSync(f.root,{recursive:true,force:true});}
 });
+
+test('invitation attempts are bounded without preventing owner grant revocation or logout',async()=>{
+ const f=fixture(),password=opaque();let p:Awaited<ReturnType<typeof launch>>|undefined;
+ try{
+  p=await launch(f);const u=p.url;
+  const claim=await post(u+'/api/claim',{assertion:f.assertion,password},u);assert.equal(claim.status,200);
+  const owner={cookie:claim.headers.get('set-cookie')!.split(';')[0]};
+  const grant=await(await post(u+'/api/mcp-grants',{},u,owner)).json();
+  let limited=false;
+  for(let i=0;i<14;i++){
+   const response=await post(u+'/api/owner/recover',{assertion:opaque(),password},u);
+   assert.ok([401,429].includes(response.status));limited ||= response.status===429;
+  }
+  assert.equal(limited,true);
+  assert.equal((await post(u+'/api/mcp-grants/revoke',{grantId:grant.grantId},u,owner)).status,200);
+  assert.equal((await post(u+'/api/owner/logout',{},u,owner)).status,200);
+ }finally{if(p){const exited=once(p.child,'exit');p.child.kill();await exited;}rmSync(f.root,{recursive:true,force:true});}
+});
+
+test('wrong-origin setup requests do not consume legitimate setup admission',async()=>{
+ const f=fixture(),password=opaque();let p:Awaited<ReturnType<typeof launch>>|undefined;
+ try{
+  p=await launch(f);const u=p.url;
+  for(let i=0;i<14;i++)assert.equal((await post(u+'/api/claim',{assertion:f.assertion,password},'https://untrusted.invalid')).status,403);
+  assert.equal((await post(u+'/api/claim',{assertion:f.assertion,password},u)).status,200);
+ }finally{if(p){const exited=once(p.child,'exit');p.child.kill();await exited;}rmSync(f.root,{recursive:true,force:true});}
+});

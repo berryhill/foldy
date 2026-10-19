@@ -175,6 +175,17 @@ this is not hosted browser/TLS acceptance.
 
 The offline [preserved-copy CLI](packaging/preserved-copy.md) reuses the release-bundle contract, validates a frozen owner-reviewed original project export, supports no-write dry-run compatibility reports, and preserves original bytes and URL without sanitization or deletion. Unsupported JavaScript/interactivity remains a reported blocker. Migrated bundles carry protected hashed provenance and persist the existing access-configuration gate before content opens, including after owner claim; the owner explicitly chooses reader policy. This is a manually hosted test-instance path, not native Cynder activation. **Connect ChatGPT** under the owner dashboard's Connect assistants panel shows the actual manifest endpoint, identity, read-only OAuth instructions, optional draft limits and revocation controls. A local test is not an actual account connection.
 
+## Owner handoff and actionable connection setup
+
+The public `/connect` journey includes direct and copyable ChatGPT/setup links.
+Recipients use `/owner/setup` with a separately delivered one-use invitation to
+choose and confirm their own password; a generic URL is never ownership proof.
+The offline invitation issuer, supported operator transport driver, normalized
+readiness observer and secure delivery boundaries are documented in
+[client onboarding](packaging/client-onboarding.md). Real OpenAI tunnel/account
+provisioning, secure invitation delivery and human password entry remain distinct
+from implemented source and synthetic acceptance tests.
+
 ## Explicit remaining acceptance
 
 The runtime now includes a SQLite update/review/publication domain, OAuth/PKCE
