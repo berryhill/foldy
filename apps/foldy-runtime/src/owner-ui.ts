@@ -43,7 +43,7 @@ function ownerRecovery(){
 }
 function invitationSetup(claimed){
  root.replaceChildren();el('p','OWNER INVITATION').className='eyebrow';el('h1','Set up ownership');
- el('p',claimed?'Use the protected one-use invitation key you received to replace existing owner access. Prior owner sessions and assistant grants are revoked.':'Use the protected one-use owner key you received.');
+ el('p',claimed?'No previous owner password is needed. Request approval for this browser, or use a protected invitation key if you already received one. Accepting ownership revokes previous owner sessions and assistant grants.':'Use the protected one-use owner key you received.');
  el('p','This address alone is not authorization. Never place the key or password in a URL or browser storage.');
  const f=form(root,async()=>{
   if(p.value!==confirmation.value){confirmation.setCustomValidity('Passwords do not match');confirmation.reportValidity();say('Passwords do not match. Nothing submitted.');return;}
@@ -58,7 +58,7 @@ function invitationSetup(claimed){
  submit('Set up ownership',f);const signIn=el('a','Already an owner? Sign in');signIn.href='/owner';
  if(claimed){
   const pairing=el('section');el('h2','Request ownership in this browser',pairing);
-  el('p','This option does not require an invitation key. A request reference is only a lookup, not proof of identity or authorization. Compare the exact reference in the supported secure operator decision UI; never send a verification code in chat. The operator must independently approve that named request before you can choose a password.',pairing);
+  el('p','No invitation key is required for this option. Ask the creator to approve the matching request in the secure approval dialog. The reference only identifies this browser request; it grants no access by itself. Never send passwords or verification codes in chat.',pairing);
   button('Request ownership of this browser',async()=>{
    const result=await api('/api/owner/pairing/request',{});
    el('p','Pending request reference: '+result.requestId+' · expires '+new Date(result.expiresAt).toLocaleString(),pairing);
@@ -73,6 +73,7 @@ function invitationSetup(claimed){
   const newPassword=field('New owner password for approved browser','password',pf);newPassword.autocomplete='new-password';newPassword.minLength=12;newPassword.maxLength=128;
   const again=field('Confirm new owner password','password',pf);again.autocomplete='new-password';again.minLength=12;again.maxLength=128;again.addEventListener('input',()=>again.setCustomValidity(''));
   submit('Complete approved browser setup',pf);
+  const fallback=el('h2','Have an invitation key?');root.insertBefore(fallback,f);root.insertBefore(pairing,fallback);
  }
  el('p','Invalid or expired key? Ask the deploying operator for a new protected invitation. Check the key you received separately; do not paste it into a link. Normal sign-in is separate.');
 }

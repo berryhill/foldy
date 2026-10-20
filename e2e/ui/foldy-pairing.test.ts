@@ -13,6 +13,8 @@ test('browser pairing stays pending until an exact offline operator decision',as
   const claimed=await owner.request.post(runtime.url+'/api/claim',{headers:{origin:runtime.url},data:{assertion:runtime.assertion,password:oldPassword}});expect(claimed.status()).toBe(200);
   await page.goto(runtime.url+'/owner/setup');
   await expect(page.getByRole('button',{name:'Request ownership of this browser'})).toBeVisible();
+  const requestBox=await page.getByRole('button',{name:'Request ownership of this browser'}).boundingBox(),keyBox=await page.getByLabel('Protected one-use owner key').boundingBox();
+  expect(requestBox&&keyBox&&requestBox.y<keyBox.y,'browser approval is the primary setup path, before the optional invitation-key form').toBe(true);
   await page.screenshot({path:info.outputPath('pairing-entry-desktop.png'),fullPage:true});
   expect(await recipient.cookies()).toEqual([]);
   await expect(page.getByText('This browser is not approved yet.')).toHaveCount(0);
