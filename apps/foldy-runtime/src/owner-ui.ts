@@ -43,7 +43,7 @@ function ownerRecovery(){
 }
 function invitationSetup(claimed){
  root.replaceChildren();el('p','OWNER INVITATION').className='eyebrow';el('h1','Set up ownership');
- el('p',claimed?'Use the protected one-use invitation key you received to replace existing owner access. Prior owner sessions and assistant grants are revoked.':'Use the protected one-use owner key you received.');
+ el('p',claimed?'No previous owner password is needed. Request approval for this browser, or use a protected invitation key if you already received one. Accepting ownership revokes previous owner sessions and assistant grants.':'Use the protected one-use owner key you received.');
  el('p','This address alone is not authorization. Never place the key or password in a URL or browser storage.');
  const f=form(root,async()=>{
   if(p.value!==confirmation.value){confirmation.setCustomValidity('Passwords do not match');confirmation.reportValidity();say('Passwords do not match. Nothing submitted.');return;}
@@ -56,6 +56,25 @@ function invitationSetup(claimed){
  const confirmation=field('Confirm owner password','password',f);confirmation.autocomplete='new-password';confirmation.minLength=12;confirmation.maxLength=128;
  confirmation.addEventListener('input',()=>confirmation.setCustomValidity(''));
  submit('Set up ownership',f);const signIn=el('a','Already an owner? Sign in');signIn.href='/owner';
+ if(claimed){
+  const pairing=el('section');el('h2','Request ownership in this browser',pairing);
+  el('p','No invitation key is required for this option. Ask the creator to approve the matching request in the secure approval dialog. The reference only identifies this browser request; it grants no access by itself. Never send passwords or verification codes in chat.',pairing);
+  button('Request ownership of this browser',async()=>{
+   const result=await api('/api/owner/pairing/request',{});
+   el('p','Pending request reference: '+result.requestId+' · expires '+new Date(result.expiresAt).toLocaleString(),pairing);
+   say('Request pending. Compare this reference in the secure operator decision UI. This browser is not approved yet.');
+  },pairing);
+  const pf=form(pairing,async()=>{
+   if(newPassword.value!==again.value){again.setCustomValidity('Passwords do not match');again.reportValidity();say('Passwords do not match. Nothing submitted.');return;}
+   const password=newPassword.value;newPassword.value='';again.value='';
+   await api('/api/owner/pairing/complete',{password});location.assign('/owner');
+  });
+  el('h3','After approval, choose password',pf);
+  const newPassword=field('New owner password for approved browser','password',pf);newPassword.autocomplete='new-password';newPassword.minLength=12;newPassword.maxLength=128;
+  const again=field('Confirm new owner password','password',pf);again.autocomplete='new-password';again.minLength=12;again.maxLength=128;again.addEventListener('input',()=>again.setCustomValidity(''));
+  submit('Complete approved browser setup',pf);
+  const fallback=el('h2','Have an invitation key?');root.insertBefore(fallback,f);root.insertBefore(pairing,fallback);
+ }
  el('p','Invalid or expired key? Ask the deploying operator for a new protected invitation. Check the key you received separately; do not paste it into a link. Normal sign-in is separate.');
 }
 function secretForm(kind){
@@ -74,7 +93,7 @@ function secretForm(kind){
  if(claim||login){const invitation=el('a','Use an owner invitation to choose your password');invitation.href='/owner/setup';el('p','If this Foldy was prepared for you, use your separately delivered one-use key. You do not need a previous owner password.');}
  if(claim||login)ownerRecovery();
 }
-async function start(){say('Checking access…');if(location.pathname==='/owner/setup'){const access=await api('/api/owner/access');invitationSetup(access.claimed);say('Enter the protected key and choose a password.');return;}if(location.pathname==='/unlock'){const s=await api('/api/viewer-access');if(s.mode==='public'){root.replaceChildren();el('h1','This Foldy is public');const a=el('a','Open Foldy');a.href='/';say('No password needed.');}else{secretForm('unlock');say(s.mode==='unavailable'?'Viewing is temporarily unavailable. Contact the owner.':'Password required.');}button('Log out of viewing',async()=>{await api('/api/viewer/logout',{});await start();say('Viewing session signed out. Public content, if enabled by the owner, remains readable.');});return;}try{const readiness=await api('/api/readiness');if(readiness.state==='ACCESS_CONFIGURATION_REQUIRED'){await recoveryAccess();return;}await dashboard();}catch(e){if(e.message==='ACCESS_CONFIGURATION_REQUIRED'){await recoveryAccess();return;}if(e.message==='AUTH_REQUIRED'||e.message==='SEALED'){const access=await api('/api/owner/access');secretForm(access.claimed?'owner-login':'claim');say(access.claimed?'Owner sign-in required.':'Claim this sealed Foldy.');}else throw e;}}
+async function start(){say('Checking access…');if(location.pathname==='/owner/setup'){const access=await api('/api/owner/access');invitationSetup(access.claimed);say('Use a protected invitation key, or request ownership of this browser and wait for independent approval.');return;}if(location.pathname==='/unlock'){const s=await api('/api/viewer-access');if(s.mode==='public'){root.replaceChildren();el('h1','This Foldy is public');const a=el('a','Open Foldy');a.href='/';say('No password needed.');}else{secretForm('unlock');say(s.mode==='unavailable'?'Viewing is temporarily unavailable. Contact the owner.':'Password required.');}button('Log out of viewing',async()=>{await api('/api/viewer/logout',{});await start();say('Viewing session signed out. Public content, if enabled by the owner, remains readable.');});return;}try{const readiness=await api('/api/readiness');if(readiness.state==='ACCESS_CONFIGURATION_REQUIRED'){await recoveryAccess();return;}await dashboard();}catch(e){if(e.message==='ACCESS_CONFIGURATION_REQUIRED'){await recoveryAccess();return;}if(e.message==='AUTH_REQUIRED'||e.message==='SEALED'){const access=await api('/api/owner/access');secretForm(access.claimed?'owner-login':'claim');say(access.claimed?'Owner sign-in required.':'Claim this sealed Foldy.');}else throw e;}}
 async function dashboard(){const [r,updates,access]=await Promise.all([api('/api/readiness'),op('list_updates'),api('/api/owner/viewer-access')]);root.replaceChildren();el('p','OWNER WORKSPACE',root).className='eyebrow';el('h1','Review what’s next');el('p','Review proposed changes, leave feedback and choose what your readers see.');const toolbar=el('div');toolbar.className='actions';button('Refresh',dashboard,toolbar);button('Download backup',downloadBackup,toolbar);ownerLogout(toolbar);const a=el('a','Open published Foldy',toolbar);a.href='/';el('p','Storage: '+r.storage+' · Content: '+r.bundle+' · Owner access active');const layout=el('div');layout.className='workspace';const list=el('section',undefined,layout);el('h2','Updates',list);if(!updates.value.length)el('p','No updates yet. New proposals will appear here when they are submitted.',list);for(const u of updates.value){const row=el('article',undefined,list);el('h3',u.title,row);el('p',u.state,row);button('Review update',()=>review(u.id),row);}const settings=el('section',undefined,layout);el('h2','Reader access',settings);el('p',access.mode==='public'?'Anyone with the address can read this Foldy.':access.mode==='password_required'?'Readers need a password. Owner access is separate.':'Viewing is unavailable until access is repaired.',settings);const f=form(settings,async()=>{if(!confirm('Set a viewing password? Existing viewer sessions will be signed out.'))return;const password=p.value;p.value='';await api('/api/owner/viewer-access',{mode:'password_required',password});await dashboard();say('Viewing password saved. Previous viewer sessions no longer have access.');});const p=field('New viewing password','password',f);p.autocomplete='new-password';p.maxLength=1024;submit('Require password',f);button('Allow public reading',async()=>{if(!confirm('Allow anyone with this address to read all published content without a password?'))return;await api('/api/owner/viewer-access',{mode:'public',confirmDisable:true});await dashboard();say('Public reading is enabled.');},settings);await ownerStatus();await connectAssistants();say('Up to date.');}
 async function ownerStatus(){
  const report=await api('/api/owner/status'),section=el('section');el('h2','Instance status',section);

@@ -30,6 +30,27 @@ All arguments are paths, public digests or the canonical origin—not the key or
 
 The authorization expires within fifteen minutes and is consumed through a durable authority-generation replacement. Redemption replaces the owner password, invalidates prior owner sessions and MCP grants, and preserves content, history and reader-access policy. Issuance alone does not change the password or prove handoff. Existing recovery tests cover expiry/replay/generation fences; the invitation issuer tests cover protected outputs and concurrency exclusion. Paired-output cleanup on caught errors is not a claim of crash-atomic invitation delivery. After an interrupted issuance, retain and inspect the partial artifacts rather than blindly overwriting them.
 
+## Browser-bound ownership request (no key delivery)
+
+At `/owner/setup`, the recipient explicitly clicks **Request ownership of this browser**. The server sets a Secure, HttpOnly, SameSite=Strict cookie with a random 256-bit possession secret; JavaScript sees only an independent request reference and expiry. The reference is a lookup identifier, not a verification/possession factor. No request is created by visiting the page. Never ask anyone to paste pairing/verification codes, passwords or keys in chat.
+
+The deploying principal must obtain a real decision for the **exact named pending request** through a supported secure masked/decision UI or an independently authenticated owner-approval channel, after the recipient compares the reference in their own browser. Queue text, page content, a request reference, and first-in-list order are not approval. This runtime does not supply that human confirmation UI. If no supported recipient-proof channel is available, keep the request pending and report that precise gate; do not invoke approval as a substitute.
+
+Only after that decision, stop the canonical runtime cleanly and run the protected offline primitive:
+
+```sh
+node dist/owner-pairing.js \
+  --request-id "$EXACT_CONFIRMED_REQUEST_REFERENCE" \
+  --state-dir "$PRIVATE_STATE_DIRECTORY" \
+  --bundle-dir "$VERIFIED_BUNDLE_DIRECTORY" \
+  --bundle-digest "$TRUSTED_BUNDLE_DIGEST" \
+  --recovery-file "$FRESH_PRIVATE_RECOVERY_FILE"
+```
+
+The request reference in argv is only a lookup. The primitive loads the private pending verifier and creates the existing generation-bound recovery authorization. It acquires `runtime.lock`, rejects links/unsafe custody, expiry, wrong identity/generation, and preexisting recovery outputs. Restart the **same** instance with `FOLDY_OWNER_RECOVERY_FILE` bound to this authorization. Do not log in again with the old password in between: that rotates the generation. In the original recipient browser, the recipient chooses/confirms their own password under **After approval, choose password**. Completion accepts only a password; the HttpOnly cookie supplies the possession secret. It revokes old owner sessions and MCP grants and rejects replay across restart. No operator should type the recipient's password or redeem their browser session.
+
+Pending records contain verifiers only, expire within fifteen minutes, and are bounded to 32. Creation prunes only validated expired/generation-stale own records under the pairing lock; unknown/unsafe entries fail closed. Approval does not overwrite existing recovery files. If a prior authorization exists, preserve it and have the deploying principal explicitly review lifecycle/custody before a new handoff; never clear it automatically. Interrupted lock creation remains fail-closed, like the existing runtime lock.
+
 ## Operator transport configuration—not client administration
 
 A client should not create an operator API key or manage hosting. The deploying operator must provision an actual OpenAI tunnel, restricted runtime credential and intended organization/workspace association before handoff. Creation/editing and runtime-use permissions are distinct. Never give an admin key to the long-lived tunnel process.

@@ -18,6 +18,7 @@ import { sourceLimiter, viewerCookie, viewerRoute } from './viewer-http.js';
 import { ingressConfig, requestOrigin } from './ingress.js';
 import { grantEvidence, tunnelBinding, transportStatus } from './connect.js';
 import { clientUiRoute } from './client-ui.js';
+import { createOwnerPairing } from './owner-pairing.js';
 const required=(name:string)=>{const v=process.env[name];if(!v)throw Error('CONFIG_REQUIRED');return v;};
 const opaque=()=>randomBytes(32).toString('base64url');
 // SDK owns initialize validation and version negotiation. Discovery must list
@@ -114,6 +115,29 @@ async function main(){
   clientUiRoute(req,res,path,state);return;
  }
  if(path==='/api/owner/access'&&req.method==='GET')return json(res,200,{claimed:!!getState(),passwordConfigured:!!getState()?.ownerPassword});
+ if(path==='/api/owner/pairing/request'||path==='/api/owner/pairing/complete'){
+  if(req.method!=='POST')return json(res,405,{code:'METHOD_INVALID'});
+  if(req.headers.origin!==origin||req.headers['sec-fetch-site']!=='same-origin'||!req.headers['content-type']?.startsWith('application/json'))return json(res,403,{code:'ORIGIN_INVALID'});
+  if(!await setupAllowed(req))return json(res,429,{code:'RATE_LIMITED'});
+  let input:unknown;try{input=await body(req,4096);}catch{return json(res,400,{code:'REQUEST_INVALID'});}
+  if(!input||typeof input!=='object'||Array.isArray(input))return json(res,400,{code:'REQUEST_INVALID'});
+  if(path==='/api/owner/pairing/request'){
+   if(Object.keys(input).length||!getState()?.ownerPassword)return json(res,400,{code:'REQUEST_INVALID'});
+   try{
+    const {requestId:pairingId,browserSecret,expiresAt}=createOwnerPairing({stateDirectory:stateDir,instanceId:identity.instanceId,bundleDigest:authorityBundleDigest});
+    res.setHeader('set-cookie',`__Host-foldy-pairing=${browserSecret}; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=900`);
+    return json(res,200,{requestId:pairingId,expiresAt});
+   }catch{return json(res,403,{code:'PAIRING_DENIED'});}
+  }
+  const candidate=input as Record<string,unknown>;
+  if(Object.keys(candidate).length!==1||typeof candidate.password!=='string')return json(res,400,{code:'REQUEST_INVALID'});
+  const secret=req.headers.cookie?.split(';').map(s=>s.trim()).find(s=>s.startsWith('__Host-foldy-pairing='))?.slice('__Host-foldy-pairing='.length);
+  if(!secret||!/^[A-Za-z0-9_-]{43}$/.test(secret))return json(res,401,{code:'AUTH_INVALID'});
+  let token:string;try{token=await authority.recoverWithPassword({assertion:secret,password:candidate.password});}catch{return json(res,401,{code:'AUTH_INVALID'});}
+  await cleanSessions();
+  res.setHeader('set-cookie',[`__Host-foldy-owner=${token}; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=43200`,'__Host-foldy-pairing=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0']);
+  return json(res,200,{recovered:true});
+ }
  if(path==='/api/claim'&&req.method==='POST'){
  if(getState())return json(res,409,{code:'ALREADY_CLAIMED'});
  if(!await setupAllowed(req))return json(res,429,{code:'RATE_LIMITED'});

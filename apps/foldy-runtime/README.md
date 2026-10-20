@@ -186,6 +186,21 @@ readiness observer and secure delivery boundaries are documented in
 provisioning, secure invitation delivery and human password entry remain distinct
 from implemented source and synthetic acceptance tests.
 
+The alternative browser pairing path begins only when a recipient clicks
+“Request ownership of this browser” at `/owner/setup`. Its displayed requestId
+is a lookup reference, never a verification factor or an approval. The random
+possession secret is held solely in a Secure HttpOnly same-site browser cookie;
+only a verifier is kept in the bounded pending store. Completion accepts a new
+password only after a separately authorized offline OS operator decision writes
+the exact request's protected recovery authorization while the runtime is
+stopped. The operator must compare that exact reference with the recipient in
+a supported secure decision UI or independently authenticated owner channel;
+never take a code in chat, approve the first/list entry, or infer authorization
+from possession of a reference. This repository does not provide that recipient
+confirmation or operator decision UI. The offline primitive/CLI alone does not
+establish the human decision and must not be run as an approval substitute.
+No actual pairing approval or live recipient handoff is evidenced by local tests.
+
 ## Explicit remaining acceptance
 
 The runtime now includes a SQLite update/review/publication domain, OAuth/PKCE
